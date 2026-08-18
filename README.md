@@ -50,10 +50,10 @@ A browser-based geometric model of a capsule-shaped bacterium and its pili, used
 | 景深范围 / 焦点距离 | 沿世界 Z 轴的硬景深窗口，光轴固定 |
 | X / Y / Z 旋转 | 只转细菌，不转镜头 |
 | 菌毛数量 | 表面固着点数量 |
-| 平均长度 | 伽马分布的均值 \(\mu\) |
-| 形状参数 \(k\) | 标准伽马分布 \(\mathrm{Gamma}(k,\theta)\)，\(\theta=\mu/k\) |
+| 平均长度 | 伽马分布的均值 $`\mu`$ |
+| 形状参数 $`k`$ | 标准伽马分布 $`\mathrm{Gamma}(k,\theta)`$，$`\theta=\mu/k`$ |
 
-菌毛长度按标准伽马分布抽样（Marsaglia–Tsang；\(k<1\) 时用 \(\mathrm{Gamma}(k+1)\times U^{1/k}\)）。固着点用带最小间距的表面采样；生长方向在表面法线 30° 圆锥内随机偏转。
+菌毛长度按标准伽马分布抽样（Marsaglia–Tsang；当 $`k<1`$ 时用 $`\mathrm{Gamma}(k+1)\times U^{1/k}`$）。固着点用带最小间距的表面采样；生长方向在表面法线 30° 圆锥内随机偏转。
 
 ### 可见判定
 
@@ -61,7 +61,7 @@ A browser-based geometric model of a capsule-shaped bacterium and its pili, used
 
 1. 至少有一段落在焦深窗口内；
 2. 二维投影后，相对菌体轮廓有外伸段；
-3. 该外伸段的投影长度 \(\ge 0.8\)（与模型长度单位相同）。
+3. 该外伸段的投影长度 $`\ge 0.8`$（与模型长度单位相同）。
 
 批量结果里：
 
@@ -129,10 +129,10 @@ Use a recent Chrome, Edge, or Firefox build.
 | Depth of field / focus distance | Hard DoF slab along world Z; optical axis is fixed |
 | X / Y / Z rotation | Rotates the cell only, not the camera |
 | Pilus count | Number of surface attachment points |
-| Mean length | Mean \(\mu\) of the gamma distribution |
-| Shape \(k\) | Standard gamma \(\mathrm{Gamma}(k,\theta)\) with \(\theta=\mu/k\) |
+| Mean length | Mean $`\mu`$ of the gamma distribution |
+| Shape $`k`$ | Standard gamma $`\mathrm{Gamma}(k,\theta)`$ with $`\theta=\mu/k`$ |
 
-True lengths are drawn from a standard gamma generator (Marsaglia–Tsang; for \(k<1\), \(\mathrm{Gamma}(k+1)\times U^{1/k}\)). Attachment points use a minimum-distance surface sampler. Growth directions are jittered inside a 30° cone around the surface normal.
+True lengths are drawn from a standard gamma generator (Marsaglia–Tsang; for $`k<1`$, $`\mathrm{Gamma}(k+1)\times U^{1/k}`$). Attachment points use a minimum-distance surface sampler. Growth directions are jittered inside a 30° cone around the surface normal.
 
 ### Visibility rule
 
@@ -140,7 +140,7 @@ A pilus is counted as visible if and only if:
 
 1. at least part of it lies inside the depth-of-field window;
 2. after 2D projection it extends beyond the cell outline;
-3. that protruding projected length is \(\ge 0.8\) (same units as the model).
+3. that protruding projected length is $`\ge 0.8`$ (same units as the model).
 
 In batch output:
 
