@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D胶囊形细菌模型</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #controls {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 1000;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .control-group {
+            margin: 10px 0;
+        }
+
+        .control-group label {
+            display: inline-block;
+            width: 80px;
+        }
+
+        .control-group input[type="number"] {
+            width: 60px;
+        }
+
+        .control-section {
+            margin-bottom: 20px;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 10px;
+        }
+
+        h3 {
+            margin: 5px 0;
+            color: #333;
+        }
+
+        #projectionView {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 400px;
+            height: 400px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        /* 添加侧面视图样式 */
+        #sideView {
+            position: fixed;
+            top: 10px;
+            left: 320px;
+            width: 600px;
+            height: 450px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            display: none; /* 默认隐藏 */
+        }
+
+        #distributionView {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            width: 600px;
+            height: 300px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .view-title {
+            padding: 5px 10px;
+            background: #f5f5f5;
+            border-bottom: 1px solid #eee;
+            font-size: 14px;
+            font-weight: bold;
+            border-radius: 4px 4px 0 0;
+        }
+
+        .chart-container {
+            flex: 1;
+            display: flex;
+            padding: 10px;
+        }
+
+        .chart {
+            flex: 1;
+            height: 100%;
+            border: 1px solid #eee;
+            margin: 0 5px;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px;
+            border-radius: 3px;
+            font-size: 12px;
+            pointer-events: none;
+            display: none;
+        }
+        #fluorescenceView {
+        position: fixed;
+        top: 450px;  /* 位于投影视图下方 */
+        right: 10px;
+        width: 400px;
+        height: 400px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        
+        #fluorescenceCanvas {
+            width: 100%;
+            height: 100%;
+        }
+        /* 添加功能按钮样式 */
+        #functionButtons {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 1000;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .function-btn {
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .function-btn:hover {
+            background-color: #45a049;
+        }
+        
+        /* 帮助对话框样式 */
+        #helpDialog {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+            z-index: 2000;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        #helpDialog h2 {
+            margin-top: 0;
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        
+        #helpDialog .close-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: #666;
+        }
+        
+        /* 导出对话框样式 */
+        #exportDialog {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+            z-index: 2000;
+            width: 400px;
+            display: none;
+        }
+        
+        #exportDialog h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        
+        .export-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        
+        .export-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .export-dialog-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        /* 批量模拟对话框样式 */
+        #batchDialog {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.3);
+            z-index: 2000;
+            width: 400px;
+            display: none;
+        }
+        
+        #batchDialog h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        
+        #batchProgress {
+            height: 20px;
+            border-radius: 10px;
+        }
+        
+        #batchProgress::-webkit-progress-bar {
+            background-color: #f0f0f0;
+            border-radius: 10px;
+        }
+        
+        #batchProgress::-webkit-progress-value {
+            background-color: #4CAF50;
+            border-radius: 10px;
+        }
+        
+        #batchProgress::-moz-progress-bar {
+            background-color: #4CAF50;
+            border-radius: 10px;
+        }
+        
+        #progressText {
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="controls">
+        <div class="control-section">
+            <h3>菌身尺寸</h3>
+            <div class="control-group">
+                <label>胶囊高度:</label>
+                <input type="range" id="height" min="1" max="5" value="2" step="0.1">
+                <input type="number" id="heightValue" value="2" min="1" max="5" step="0.1">
+            </div>
+            <div class="control-group">
+                <label>半球半径:</label>
+                <input type="range" id="radius" min="0.1" max="1" value="0.5" step="0.1">
+                <input type="number" id="radiusValue" value="0.5" min="0.1" max="1" step="0.1">
+            </div>
+        </div>
+
+        <!-- 新增景深控制部分 -->
+        <div class="control-section">
+            <h3>景深设置</h3>
+            <div class="control-group">
+                <label for="depthOfField">景深范围:</label>
+                <input type="range" id="depthOfField" min="0" max="10" step="0.1" value="5">
+                <input type="number" id="depthOfFieldValue" min="0" max="10" step="0.1" value="5">
+            </div>
+            <div class="control-group">
+                <label for="focusDistance">焦点距离:</label>
+                <input type="range" id="focusDistance" min="-5" max="5" step="0.1" value="0">
+                <input type="number" id="focusDistanceValue" min="-5" max="5" step="0.1" value="0">
+            </div>
+            <!-- 添加侧面视图切换按钮 -->
+            <div class="control-group">
+                <button id="showSideView">显示景深侧面视图</button>
+            </div>
+        </div>
+
+        <div class="control-section">
+            <h3>旋转控制</h3>
+            <div class="control-group">
+                <label>X轴旋转:</label>
+                <input type="range" id="rotationX" min="-180" max="180" value="0" step="1">
+                <input type="number" id="rotationXValue" value="0" min="-180" max="180">
+            </div>
+            <div class="control-group">
+                <label>Y轴旋转:</label>
+                <input type="range" id="rotationY" min="-180" max="180" value="0" step="1">
+                <input type="number" id="rotationYValue" value="0" min="-180" max="180">
+            </div>
+            <div class="control-group">
+                <label>Z轴旋转:</label>
+                <input type="range" id="rotationZ" min="-180" max="180" value="0" step="1">
+                <input type="number" id="rotationZValue" value="0" min="-180" max="180">
+            </div>
+            <div class="control-group">
+                <button id="resetRotation" style="margin-top: 10px; padding: 5px 10px;">复原姿态</button>
+            </div>
+        </div>
+
+        <div class="control-section">
+            <h3>菌毛控制</h3>
+            <div class="control-group">
+                <label>菌毛数量:</label>
+                <input type="range" id="hairCount" min="0" max="50" value="15" step="1">
+                <input type="number" id="hairCountValue" value="15" min="0" max="50">
+            </div>
+            <div class="control-group">
+                <label>平均长度:</label>
+                <input type="range" id="hairLength" min="0.5" max="10" value="2.0" step="0.1">
+                <input type="number" id="hairLengthValue" value="2.0" min="0.5" max="10" step="0.1">
+            </div>
+            <div class="control-group">
+                <label>形状参数:</label>
+                <input type="range" id="shapeParam" min="0.5" max="10" value="3.0" step="0.1">
+                <input type="number" id="shapeParamValue" value="3.0" min="0.5" max="10" step="0.1">
+            </div>
+            <div class="control-group">
+                <button id="regenerateHairs" style="margin-top: 10px; padding: 5px 10px;">重新生成菌毛</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="projectionView">
+        <div class="view-title">投影视图</div>
+        <div id="projectionCanvas"></div>
+    </div>
+
+    <!-- 添加侧面视图容器 -->
+    <div id="sideView">
+        <div class="view-title">景深侧面视图 <button id="toggleSideView">隐藏</button></div>
+        <div id="sideViewCanvas"></div>
+    </div>
+
+    <!-- 添加荧光模拟视图容器 -->
+    <div id="fluorescenceView">
+        <div class="view-title">荧光视图</div>
+        <div id="fluorescenceCanvas"></div>
+    </div>
+
+    <div id="distributionView">
+        <div class="view-title">菌毛真实长度分布</div>
+        <div class="chart-container">
+            <div class="chart" id="hairLengthHistChart" style="width: 100%;">
+                <canvas id="hairLengthHistCanvas"></canvas>
+            </div>
+        </div>
+        <div class="tooltip" id="chartTooltip"></div>
+    </div>
+    
+    <!-- 修改投影菌毛统计视图容器的样式 -->
+    <div id="projectionStatsView"
+        style="position: fixed; bottom: 10px; right: 10px; width: 600px; height: 350px; background: rgba(255, 255, 255, 0.9); border: 1px solid #ccc; border-radius: 5px; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1); z-index: 1000; display: flex; flex-direction: column;">
+        <div class="view-title" style="padding: 5px 10px; font-weight: bold; border-bottom: 1px solid #ccc;">菌毛投影长度分布</div>
+        <div class="chart-container" style="flex: 1; padding: 5px;">
+            <div class="chart" id="projectionHairLengthChart" style="height: 280px;">
+                <canvas id="projectionHairLengthCanvas"></canvas>
+            </div>
+        </div>
+        <div id="projectionStatsInfo"
+            style="padding: 5px; font-size: 14px; white-space: normal; overflow: hidden; text-overflow: ellipsis;"></div>
+    </div>
+
+    <!-- 添加功能按钮 -->
+    <div id="functionButtons">
+        <button id="exportBtn" class="function-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            导出
+        </button>
+        <button id="batchBtn" class="function-btn">
+            <i class="fas fa-tasks"></i> 批量模拟
+        </button>
+        <button id="helpBtn" class="function-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+            帮助
+        </button>
+    </div>
+
+    <!-- 在body结束标签前添加批量模拟对话框 -->
+    <div id="batchDialog" style="display: none;">
+        <h3>批量模拟设置</h3>
+        <p>系统将使用当前参数多次重新生成菌毛，并在不同姿态下进行分析。</p>
+    
+        <div class="export-options">
+            <div class="export-option">
+                <label for="modelCount">模型数量:</label>
+                <input type="number" id="modelCount" value="5" min="1" max="20" style="width: 60px;">
+            </div>
+            <div class="export-option">
+                <label for="angleCount">每个模型的姿态数:</label>
+                <input type="number" id="angleCount" value="10" min="1" max="50" style="width: 60px;">
+            </div>
+        </div>
+    
+        <div style="margin-top: 15px;">
+            <progress id="batchProgress" value="0" max="100" style="width: 100%; display: none;"></progress>
+            <p id="progressText" style="text-align: center; margin-top: 5px;"></p>
+        </div>
+    
+        <div class="export-dialog-buttons">
+            <button id="cancelBatch">取消</button>
+            <button id="cancelRunningBatch" style="background-color: #f44336; color: white; display: none;">停止模拟</button>
+            <button id="startBatch" style="background-color: #4CAF50; color: white;">开始模拟</button>
+        </div>
+    </div>
+    
+    <!-- 帮助对话框 -->
+    <div id="helpDialog">
+        <button class="close-btn">&times;</button>
+        <h2>3D胶囊形细菌模型使用帮助</h2>
+        <div class="help-content">
+            <h3>基本操作</h3>
+            <ul>
+                <li><strong>缩放：</strong> 使用鼠标滚轮可以放大或缩小模型视图</li>
+                <li><strong>旋转：</strong> 通过控制面板中的旋转滑块调整模型姿态</li>
+                <li><strong>重置：</strong> 点击"复原姿态"按钮可以重置模型到初始位置</li>
+            </ul>
+    
+            <h3>模型参数设置</h3>
+            <ul>
+                <li><strong>菌身尺寸：</strong>
+                    <ul>
+                        <li>胶囊高度：调整胶囊体的整体长度</li>
+                        <li>半球半径：调整胶囊体两端半球的半径</li>
+                    </ul>
+                </li>
+                <li><strong>景深设置：</strong>
+                    <ul>
+                        <li>景深范围：控制模拟显微镜的景深范围大小</li>
+                        <li>焦点距离：调整焦平面相对于模型中心的位置</li>
+                        <li>侧面视图：点击"显示景深侧面视图"可查看景深平面的位置</li>
+                    </ul>
+                </li>
+                <li><strong>菌毛控制：</strong>
+                    <ul>
+                        <li>菌毛数量：调整模型表面菌毛的总数</li>
+                        <li>平均长度：设置菌毛长度的平均值</li>
+                        <li>形状参数：伽马分布 Gamma(k, θ) 的形状 k；尺度 θ = 平均长度 / k，因此均值等于所设平均长度</li>
+                        <li>重新生成：点击"重新生成菌毛"按钮可以使用当前参数重新生成菌毛</li>
+                    </ul>
+                </li>
+            </ul>
+    
+            <h3>视图说明</h3>
+            <ul>
+                <li><strong>主视图：</strong> 显示3D胶囊细菌模型，可通过滚轮缩放</li>
+                <li><strong>投影视图：</strong> 显示从当前视角看到的胶囊投影，模拟显微镜下的观察效果</li>
+                <li><strong>荧光视图：</strong> 显示菌毛内部段和外伸段的荧光效果
+                    <ul>
+                        <li>黄色线段：表示与胶囊体重叠的菌毛内部段</li>
+                        <li>绿色线段：表示外伸出胶囊体的菌毛段</li>
+                        <li>红色线段：表示超出景深范围的菌毛段（不会在显微镜中清晰成像）</li>
+                    </ul>
+                </li>
+                <li><strong>景深侧面视图：</strong> 显示景深平面的位置和胶囊体的侧面视图
+                    <ul>
+                        <li>蓝色虚线：表示近景深平面</li>
+                        <li>红色虚线：表示远景深平面</li>
+                    </ul>
+                </li>
+                <li><strong>菌毛长度分布：</strong> 显示菌毛真实长度的统计分布直方图</li>
+                <li><strong>菌毛投影长度分布：</strong> 显示投影视图中菌毛外伸长度的统计分布，包含均值、标准差等统计信息</li>
+            </ul>
+    
+            <h3>功能按钮</h3>
+            <ul>
+                <li><strong>导出：</strong> 导出当前模型的数据
+                    <ul>
+                        <li>可选择导出模型参数、菌毛真实长度数据和投影长度数据</li>
+                        <li>支持JSON和Excel两种导出格式</li>
+                    </ul>
+                </li>
+                <li><strong>批量模拟：</strong> 进行多次模拟并收集数据
+                    <ul>
+                        <li>可设置模型数量和每个模型的姿态数</li>
+                        <li>系统会自动生成多个模型并在不同姿态下分析菌毛投影</li>
+                        <li>真实长度每个模型只记录一次；观测表按菌毛编号与该姿态的投影长度配对</li>
+                        <li>适用于获取统计学意义上的菌毛投影长度分布</li>
+                    </ul>
+                </li>
+                <li><strong>帮助：</strong> 显示此帮助信息</li>
+            </ul>
+    
+            <h3>分析工具</h3>
+            <ul>
+                <li><strong>投影分析图：</strong> 可通过荧光视图下方的按钮显示/隐藏投影分析图，用于查看菌毛与胞体边缘的交点</li>
+                <li><strong>统计信息：</strong> 菌毛投影长度分布图下方显示当前视角下可见菌毛的数量、平均长度、标准差等统计信息。可见定义为：焦深范围内、轮廓外伸的投影长度 ≥ 0.8（与模型长度单位相同）</li>
+            </ul>
+    
+            <h3>使用技巧</h3>
+            <ul>
+                <li>调整景深范围和焦点距离可以模拟显微镜观察中的聚焦效果</li>
+                <li>形状参数越大，菌毛长度分布越集中；越小，分布越分散。长度按标准伽马分布 Gamma(k, θ) 抽样</li>
+                <li>通过旋转模型可以观察不同角度下菌毛的投影效果</li>
+                <li>批量模拟功能适合进行大量数据采集和统计分析</li>
+            </ul>
+
+            <!-- 添加作者信息部分 -->
+            <h3>关于作者</h3>
+            <div style="border-top: 1px solid #eee; padding-top: 10px; margin-top: 15px;">
+                <p><strong>开发者：</strong> Lucien</p>
+                <p><strong>单位：</strong> 电子科技大学软物质与微生物技术实验室</p>
+                <p><strong>联系邮箱：</strong> lucien-6@qq.com</p>
+                <p><strong>版本：</strong> 1.2.1 (2025年04月)</p>
+                <p><strong>项目说明：</strong> 本项目旨在模拟胶囊形细菌的三维结构及其在显微镜下的成像效果，为微生物学研究提供可视化分析工具。</p>
+                <p style="margin-top: 10px; font-style: italic; color: #666;">© 2025 版权所有，保留所有权利。未经许可，禁止商业用途。</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 导出对话框 -->
+    <div id="exportDialog">
+        <h3>导出选项</h3>
+        <div class="export-options">
+            <div class="export-option">
+                <input type="checkbox" id="exportModelParams" checked>
+                <label for="exportModelParams">模型参数</label>
+            </div>
+            <div class="export-option">
+                <input type="checkbox" id="exportHairLengths" checked>
+                <label for="exportHairLengths">菌毛真实长度数据</label>
+            </div>
+            <div class="export-option">
+                <input type="checkbox" id="exportProjectionData" checked>
+                <label for="exportProjectionData">菌毛投影长度数据</label>
+            </div>
+    
+            <!-- 添加格式选择 -->
+            <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 10px;">
+                <p style="margin-bottom: 8px; font-weight: bold;">导出格式:</p>
+                <div class="export-option">
+                    <input type="radio" id="formatJSON" name="exportFormat" value="json" checked>
+                    <label for="formatJSON">JSON</label>
+                </div>
+                <div class="export-option">
+                    <input type="radio" id="formatExcel" name="exportFormat" value="excel">
+                    <label for="formatExcel">Excel</label>
+                </div>
+            </div>
+        </div>
+        <div class="export-dialog-buttons">
+            <button id="cancelExport">取消</button>
+            <button id="confirmExport">导出</button>
+        </div>
+    </div>
+
+    <!-- 在其他脚本引用之前添加SheetJS库 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="capsule.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,19 @@
+# Operating system
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editors and local tools
+.idea/
+.vscode/
+.cursor/
+.understand-anything/
+.codegraph/
+
+# Generated batch outputs (reproduced by the app)
+*.xlsx
+*.json
+
+# Keep example figures tracked; ignore other dumps
+*.log
+*.tmp
