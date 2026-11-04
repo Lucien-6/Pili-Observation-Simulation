@@ -70,19 +70,6 @@
             color: #333;
         }
 
-        #projectionView {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            width: 400px;
-            height: 400px;
-            background: rgba(255, 255, 255, 0.9);
-            border: 1px solid #ccc;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-            z-index: 1000;
-        }
-
         /* 添加侧面视图样式 */
         #sideView {
             position: fixed;
@@ -111,6 +98,27 @@
             z-index: 1000;
             display: flex;
             flex-direction: column;
+        }
+
+        /* Orientation gizmo: sits between the true-length histogram (ends at x = 610px)
+           and the projected-length panel (starts 610px from the right edge); shrinks on narrow windows */
+        #axisGizmo {
+            position: fixed;
+            bottom: 10px;
+            left: 618px;
+            width: clamp(64px, calc(100vw - 1236px), 104px);
+            aspect-ratio: 1 / 1;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        #axisGizmoCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
         }
 
         .view-title {
@@ -145,27 +153,54 @@
             pointer-events: none;
             display: none;
         }
+        /* Fluorescence / projection analysis window (top right): the two images share one 512 x 512 area */
         #fluorescenceView {
-        position: fixed;
-        top: 450px;  /* 位于投影视图下方 */
-        right: 10px;
-        width: 400px;
-        height: 400px;
-        background: rgba(255, 255, 255, 0.9);
-        border: 1px solid #ccc;
-        border-radius: 5px;
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 512px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
         }
-        
+
+        #fluorescenceViewHeader {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        #analysisViewToggle {
+            padding: 4px 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        #analysisViewToggle:hover {
+            background-color: #45a049;
+        }
+
         #fluorescenceCanvas {
-            width: 100%;
-            height: 100%;
+            position: relative;
+            width: 512px;
+            height: 512px;
+            overflow: hidden;
+            cursor: zoom-in;
         }
         /* 添加功能按钮样式 */
         #functionButtons {
             position: fixed;
             top: 10px;
-            left: 50%;
+            /* centred between the controls panel (ends at ~346px) and the 512px window on the right (+ margins) */
+            left: calc(50% - 89px);
             transform: translateX(-50%);
             background: rgba(255, 255, 255, 0.8);
             padding: 10px;
@@ -406,20 +441,18 @@
         </div>
     </div>
 
-    <div id="projectionView">
-        <div class="view-title" data-i18n="view.projection">投影视图</div>
-        <div id="projectionCanvas"></div>
-    </div>
-
     <!-- Side view container -->
     <div id="sideView">
         <div class="view-title"><span data-i18n="view.side">景深侧面视图</span> <button id="toggleSideView" data-i18n="btn.hide">隐藏</button></div>
         <div id="sideViewCanvas"></div>
     </div>
 
-    <!-- Fluorescence view container -->
+    <!-- Fluorescence / projection analysis window: the title, button text, image and legend are set by pili-sim.js -->
     <div id="fluorescenceView">
-        <div class="view-title" data-i18n="view.fluorescence">荧光视图</div>
+        <div class="view-title" id="fluorescenceViewHeader">
+            <span id="fluorescenceViewTitle"></span>
+            <button id="analysisViewToggle"></button>
+        </div>
         <div id="fluorescenceCanvas"></div>
     </div>
 
@@ -431,6 +464,11 @@
             </div>
         </div>
         <div class="tooltip" id="chartTooltip"></div>
+    </div>
+
+    <!-- Orientation gizmo: the bacterium's own X/Y/Z axes as seen from the camera -->
+    <div id="axisGizmo" data-i18n-title="gizmo.tip">
+        <canvas id="axisGizmoCanvas"></canvas>
     </div>
 
     <!-- Projected pilus statistics container -->
@@ -517,7 +555,7 @@
             <h3>基本操作</h3>
             <ul>
                 <li><strong>缩放：</strong> 使用鼠标滚轮可以放大或缩小模型视图</li>
-                <li><strong>旋转：</strong> 通过控制面板中的旋转滑块调整模型姿态。三个角度为 XYZ 欧拉角（度），与批量模拟和导出文件使用同一约定，把导出的角度填入即可复现该姿态</li>
+                <li><strong>旋转：</strong> 在主视图中按住鼠标左键拖动即可旋转细菌（含菌毛），向右拖则近侧表面向右转、向下拖则向下转；也可通过控制面板中的旋转滑块调整模型姿态。拖动时三个角度会同步更新（精确到 0.01°）。三个角度为 XYZ 欧拉角（度），与批量模拟和导出文件使用同一约定，把导出的角度填入即可复现该姿态</li>
                 <li><strong>重置：</strong> 点击"复原姿态"按钮可以重置模型到初始位置</li>
                 <li><strong>语言：</strong> 点击顶部的语言按钮可在中文与 English 之间切换，选择会被记住；导出的 Excel/JSON、图表和图片同样使用当前语言</li>
             </ul>
@@ -550,13 +588,12 @@
 
             <h3>视图说明</h3>
             <ul>
-                <li><strong>主视图：</strong> 显示3D胶囊细菌模型，可通过滚轮缩放</li>
-                <li><strong>投影视图：</strong> 显示从当前视角看到的胶囊投影，模拟显微镜下的观察效果</li>
-                <li><strong>荧光视图：</strong> 显示菌毛内部段和外伸段的荧光效果
+                <li><strong>主视图：</strong> 显示3D胶囊细菌模型，可通过滚轮缩放，按住鼠标左键拖动可旋转</li>
+                <li><strong>荧光视图 / 投影分析视图（右上角）：</strong> 两个视图共用右上角的同一个窗口，点击窗口右上角的按钮（“切换分析视图” / “切换荧光视图”）即可互相切换。两者都是从当前视角看到的正交投影，模拟显微镜下的观察效果
                     <ul>
-                        <li>黄色线段：表示与胶囊体重叠的菌毛内部段</li>
-                        <li>绿色线段：表示外伸出胶囊体的菌毛段</li>
-                        <li>红色线段：表示超出景深范围的菌毛段（不会在显微镜中清晰成像）</li>
+                        <li>荧光视图：只显示<strong>可见菌毛段</strong>（绿色），即位于景深范围内、从胞体轮廓外伸、且投影长度达到可见阈值的部分；与胞体重叠的部分和景深范围外的部分不显示</li>
+                        <li>投影分析视图：显示全部分析结果。黄色线段：与胞体轮廓重叠的菌毛段；绿色线段：外伸出轮廓且在景深范围内的菌毛段；红色线段：超出景深范围的菌毛段（不会在显微镜中清晰成像）；白点：菌毛与胞体边缘的交点。图例显示在窗口右下角</li>
+                        <li>缩放：在该窗口内滚动鼠标滚轮可放大或缩小图像（两个视图共用同一缩放比例，只影响显示，不影响统计结果）；双击恢复默认缩放</li>
                     </ul>
                 </li>
                 <li><strong>景深侧面视图：</strong> 显示景深平面的位置和胶囊体的侧面视图
@@ -566,7 +603,8 @@
                     </ul>
                 </li>
                 <li><strong>菌毛长度分布：</strong> 显示菌毛真实长度的统计分布直方图</li>
-                <li><strong>菌毛投影长度分布：</strong> 显示投影视图中菌毛外伸长度的统计分布，包含均值、标准差等统计信息</li>
+                <li><strong>菌毛投影长度分布：</strong> 显示荧光视图中可见菌毛外伸长度的统计分布，包含均值、标准差等统计信息</li>
+                <li><strong>坐标轴示意图（左下角，真实长度直方图右侧）：</strong> 显示菌体自身的 X / Y / Z 轴在当前视角下的朝向，类似建模软件里的坐标轴小部件。Y 为长轴；实线端带字母的一端为正方向，淡色短线为负方向。它随旋转滑块和视角同步变化，便于直观感知菌体的三维姿态。鼠标悬停可查看说明</li>
             </ul>
 
             <h3>功能按钮</h3>
@@ -594,7 +632,7 @@
 
             <h3>分析工具</h3>
             <ul>
-                <li><strong>投影分析图：</strong> 可通过荧光视图下方的按钮显示/隐藏投影分析图，用于查看菌毛与胞体边缘的交点</li>
+                <li><strong>投影分析视图：</strong> 点击右上角窗口里的“切换分析视图”按钮，窗口画面会换成投影分析图，用于查看菌毛与胞体边缘的交点（白点）以及各菌毛段的分类（胞体轮廓内黄色、外伸绿色、景深范围外红色）；再点“切换荧光视图”即可切回</li>
                 <li><strong>统计信息：</strong> 菌毛投影长度分布图下方显示当前视角下可见菌毛的数量、平均长度、标准差等统计信息。可见定义为：焦深范围内、轮廓外伸的投影长度 ≥ 0.8（与模型长度单位相同）</li>
             </ul>
 
@@ -613,7 +651,7 @@
                 <p><strong>开发者：</strong> Lucien</p>
                 <p><strong>单位：</strong> 电子科技大学软物质与微生物技术实验室</p>
                 <p><strong>联系邮箱：</strong> lucien-6@qq.com</p>
-                <p><strong>版本：</strong> 2.0.0 (2026-11-04)</p>
+                <p><strong>版本：</strong> 2.1.0 (2026-11-04)</p>
                 <p><strong>项目说明：</strong> 本项目旨在模拟胶囊形细菌的三维结构及其在显微镜下的成像效果，为微生物学研究提供可视化分析工具。</p>
                 <p style="margin-top: 10px; font-style: italic; color: #666;">© 2025–2026 版权所有，保留所有权利。未经许可，禁止商业用途。</p>
             </div>
@@ -623,7 +661,7 @@
             <h3>Basic Operations</h3>
             <ul>
                 <li><strong>Zoom:</strong> Use the mouse wheel to zoom the model view in or out.</li>
-                <li><strong>Rotate:</strong> Adjust the pose with the rotation sliders in the control panel. The three angles are XYZ Euler angles (degrees), the same convention used by batch simulation and the exported files, so entering an exported angle reproduces that pose.</li>
+                <li><strong>Rotate:</strong> Hold the left mouse button and drag in the main view to rotate the bacterium (pili included): dragging right turns the near surface to the right, dragging down turns it down. You can also use the rotation sliders in the control panel. The three angles update while you drag (to 0.01°) and are XYZ Euler angles (degrees), the same convention used by batch simulation and the exported files, so entering an exported angle reproduces that pose.</li>
                 <li><strong>Reset:</strong> Click "Reset pose" to return the model to its initial orientation.</li>
                 <li><strong>Language:</strong> Use the language button at the top to switch between 中文 and English. The choice is remembered; exported Excel/JSON files, charts and images use the current language as well.</li>
             </ul>
@@ -656,13 +694,12 @@
 
             <h3>Views</h3>
             <ul>
-                <li><strong>Main view:</strong> the 3D capsule bacterium; zoom with the mouse wheel.</li>
-                <li><strong>Projection view:</strong> the capsule projection seen from the current viewpoint, simulating the microscope image.</li>
-                <li><strong>Fluorescence view:</strong> fluorescence appearance of the inside and protruding pilus segments.
+                <li><strong>Main view:</strong> the 3D capsule bacterium; zoom with the mouse wheel, rotate by dragging with the left mouse button.</li>
+                <li><strong>Fluorescence view / projection analysis view (top right):</strong> both views share the one window at the top right; the button in its title bar ("Switch to analysis view" / "Switch to fluorescence view") switches between them. Both are orthographic projections seen from the current viewpoint, simulating the microscope image.
                     <ul>
-                        <li>Yellow: inside segment overlapping the capsule.</li>
-                        <li>Green: segment protruding from the capsule.</li>
-                        <li>Red: segment outside the depth of field (not sharply imaged by the microscope).</li>
+                        <li>Fluorescence view: shows only the <strong>visible pilus segments</strong> (green): the part that is inside the depth of field, protrudes from the cell outline and whose projected length reaches the visibility threshold. The parts overlapped by the cell and the parts outside the depth of field are not shown.</li>
+                        <li>Projection analysis view: shows the complete analysis. Yellow: pilus parts overlapped by the cell outline; green: parts protruding from the outline inside the depth of field; red: parts outside the depth of field (not sharply imaged by the microscope); white dots: pilus / cell-edge intersections. The legend is in the lower right corner of the window.</li>
+                        <li>Zoom: scroll the mouse wheel inside the window to zoom the image in or out (both views share one zoom factor; it only changes the display, not the statistics); double-click to restore the default zoom.</li>
                     </ul>
                 </li>
                 <li><strong>DoF side view:</strong> the DoF planes together with a side view of the capsule.
@@ -672,7 +709,8 @@
                     </ul>
                 </li>
                 <li><strong>True pilus length distribution:</strong> histogram of the true pilus lengths.</li>
-                <li><strong>Projected pilus length distribution:</strong> distribution of the protruding projected lengths in the projection view, with mean, standard deviation and other statistics.</li>
+                <li><strong>Projected pilus length distribution:</strong> distribution of the protruding projected lengths of the visible pili, with mean, standard deviation and other statistics.</li>
+                <li><strong>Axis gizmo (bottom left, right of the true-length histogram):</strong> the bacterium's own X / Y / Z axes as seen from the camera, like the axis widget of a modelling program. Y is the long axis; the lettered solid end is the positive direction and the faint short line the negative one. It follows the rotation sliders and the camera, so you can see the 3D orientation of the cell at a glance. Hover it for a reminder.</li>
             </ul>
 
             <h3>Function Buttons</h3>
@@ -700,7 +738,7 @@
 
             <h3>Analysis Tools</h3>
             <ul>
-                <li><strong>Projection analysis image:</strong> use the button below the fluorescence view to show/hide the projection analysis image, which shows the intersections of pili with the cell outline.</li>
+                <li><strong>Projection analysis view:</strong> click "Switch to analysis view" in the top-right window to replace the image with the projection analysis image, which shows the intersections of pili with the cell outline (white dots) and the classification of every pilus part (yellow inside the cell outline, green protruding, red outside the depth of field); click "Switch to fluorescence view" to switch back.</li>
                 <li><strong>Statistics:</strong> below the projected length chart you find the number of visible pili, mean length, standard deviation, etc. for the current viewpoint. A pilus is visible if its projected length protruding from the outline, inside the depth of field, is &ge; 0.8 (in model length units).</li>
             </ul>
 
@@ -719,7 +757,7 @@
                 <p><strong>Developer:</strong> Lucien</p>
                 <p><strong>Affiliation:</strong> Soft Matter and Microbial Technology Laboratory, University of Electronic Science and Technology of China</p>
                 <p><strong>Contact:</strong> lucien-6@qq.com</p>
-                <p><strong>Version:</strong> 2.0.0 (2026-11-04)</p>
+                <p><strong>Version:</strong> 2.1.0 (2026-11-04)</p>
                 <p><strong>About the project:</strong> This project simulates the three-dimensional structure of capsule-shaped bacteria and their appearance under a microscope, providing a visual analysis tool for microbiology research.</p>
                 <p style="margin-top: 10px; font-style: italic; color: #666;">&copy; 2025&ndash;2026 All rights reserved. Commercial use is prohibited without permission.</p>
             </div>

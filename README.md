@@ -22,14 +22,16 @@ A browser-based geometric model of a capsule-shaped bacterium and its pili, used
 
 作者：Lucien（电子科技大学软物质与微生物技术实验室）  
 邮箱：lucien-6@qq.com  
-版本：2.0.0（2026-11-04），文档更新日期：2026-11-04  
+版本：2.1.0（2026-11-04），文档更新日期：2026-11-04  
 更新记录见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ### 功能
 
-- 三维胶囊菌体 + 直线菌毛，主视图可滚轮缩放
-- 正交投影视图（模拟显微镜俯视）
-- 荧光视图：轮廓内（黄）、焦深内外伸（绿）、焦深外（红）
+- 三维胶囊菌体 + 直线菌毛，主视图可滚轮缩放，按住鼠标左键拖动可旋转（角度同步写回旋转控件，精确到 0.01°）
+- 右上角的荧光视图 / 投影分析视图（正交投影，模拟显微镜俯视），共用同一窗口，用窗口右上角的按钮切换，滚轮可缩放图像（双击恢复）
+  - 荧光视图：只显示可见菌毛段（景深内、外伸出轮廓且投影长度达到阈值的部分），不显示与胞体重叠和景深外的部分
+  - 投影分析视图：显示全部分析结果——胞体轮廓内（黄）、景深内外伸（绿）、景深外（红）、菌毛与胞体边缘的交点（白点），带图例
+- 左下角坐标轴示意图：显示菌体自身 X / Y / Z 轴在当前视角下的朝向（Y 为长轴），随旋转与视角同步变化
 - 可选侧面视图，显示近/远焦平面
 - 菌毛真长直方图、投影外伸长度直方图及可见根数统计
 - 固着点分配可设置：默认圆柱面 55% / 半球面 45%（实验观测值），占比可调，也可按表面积自适应
@@ -126,14 +128,16 @@ The optical model is an **ideal geometric microscope**. It does not include a po
 
 Author: Lucien (Soft Matter and Microbial Technology Laboratory, UESTC)  
 Email: lucien-6@qq.com  
-Version: 2.0.0 (2026-11-04); documentation updated 2026-11-04  
+Version: 2.1.0 (2026-11-04); documentation updated 2026-11-04  
 Release notes: see [`CHANGELOG.md`](CHANGELOG.md)
 
 ### Features
 
-- 3D capsule body with straight pili; scroll-wheel zoom in the main view
-- Orthographic projection view (microscope-like top view)
-- Fluorescence view: inside the outline (yellow), in-focus protruding tips (green), out of focus (red)
+- 3D capsule body with straight pili; scroll-wheel zoom in the main view and left-button drag to rotate (the angles are written back to the rotation controls, to 0.01°)
+- Fluorescence view / projection analysis view at the top right (orthographic projection, microscope-like top view) share one window; a button in its title bar switches between them, the mouse wheel zooms the image (double-click restores it)
+  - Fluorescence view: only the visible pilus segments (inside the depth of field, protruding from the outline and reaching the length threshold); parts overlapped by the cell and parts outside the depth of field are not shown
+  - Projection analysis view: the complete analysis — inside the outline (yellow), protruding in focus (green), outside the depth of field (red), pilus / cell-edge intersections (white dots), with a legend
+- Axis gizmo at the bottom left: the bacterium's own X / Y / Z axes as seen from the camera (Y is the long axis), following the rotation and the viewpoint
 - Optional side view showing near/far focal planes
 - Histograms of true pilus length and projected tip length, plus visible-count statistics
 - Configurable attachment allocation: 55% cylinder / 45% hemispheres by default (experimental observation), adjustable, or area-proportional

@@ -5,6 +5,33 @@ Dates use `YYYY-MM-DD`. Author: Lucien (Soft Matter and Microbial Technology Lab
 
 本文件记录 **capsule-pili-sim** 的所有重要变更。日期格式为 `YYYY-MM-DD`。作者：Lucien（电子科技大学软物质与微生物技术实验室）。
 
+## [2.1.0] - 2026-11-04
+
+### Added / 新增
+
+- **Drag to rotate** in the main view: hold the left mouse button and drag to turn the bacterium (pili included) like a trackball; the camera stays fixed. After every step the pose is written back as XYZ Euler angles rounded to 0.01° and rebuilt from exactly those angles, so the sliders, number inputs and exported angles always match the pose. Ignored while a batch run is going on; the mouse wheel still zooms.
+  — 主视图支持按住鼠标左键拖动旋转细菌（含菌毛），类似轨迹球，相机保持不动。每一步都会把姿态写回为精确到 0.01° 的 XYZ 欧拉角，并以这组角度重建姿态，因此滑块、数值框与导出的角度始终与实际姿态严格对应。批量模拟运行期间不响应拖动；滚轮仍可缩放。
+- **Axis gizmo** at the bottom left (right of the true-length histogram): the bacterium's own X / Y / Z axes as seen from the camera (Y is the long axis; the lettered solid end is positive, the faint stub negative). It follows the rotation sliders and the camera, and shrinks on narrow windows (64–104 px).
+  — 坐标轴示意图：位于左下角（真实长度直方图右侧），显示菌体自身 X / Y / Z 轴在当前视角下的朝向（Y 为长轴；带字母的实线端为正方向，淡色短线为负方向），随旋转滑块和视角同步变化，窗口较窄时自动缩小（64–104 px）。
+- **Mouse-wheel zoom** of the fluorescence / analysis image (double-click restores it). It only changes the display; the analysis and the statistics are unaffected.
+  — 荧光/分析视图支持鼠标滚轮缩放（双击恢复）。只影响显示，不影响分析与统计结果。
+
+### Changed / 变更
+
+- **One window for two views.** The projection view in the top right corner is removed. The fluorescence view moves to the top right and is enlarged to 512 × 512 (the size of the analysis image). The button in its title bar now reads "Switch to analysis view" / "Switch to fluorescence view" and swaps the image of the same window between the fluorescence view and the projection analysis view (previously the analysis image was a separate pop-up).
+  — 一个窗口两个视图：移除右上角的投影视图；荧光视图移至右上角并放大为 512 × 512（与分析图一致）；标题栏按钮改为“切换分析视图”/“切换荧光视图”，在同一窗口内把画面在荧光视图与投影分析视图之间切换（原先分析图是单独弹出的窗口）。
+- **The fluorescence view shows only the visible pilus segments** (in focus, protruding from the cell outline and reaching the visibility threshold). The parts overlapped by the cell and the parts outside the depth of field are no longer drawn there; the projection analysis view shows them.
+  — 荧光视图只显示可见菌毛段（景深内、外伸出胞体轮廓且达到可见阈值）；与胞体重叠的部分和景深范围外的部分不再显示，它们在投影分析视图中显示。
+- **Projection analysis view**: pili are drawn by class with the legend colours (bright yellow `#ffe600` inside the cell outline, green protruding in focus, red outside the depth of field), on a dark green cell (`#2f7f55`) so that yellow and green both stand out. The cell is drawn analytically (an orthographic capsule is a stadium), so it stays sharp when zoomed. Intersection dots are white (they were red, which clashed with the red out-of-depth segments).
+  — 投影分析视图：按类别用图例颜色绘制菌毛（胞体轮廓内为亮黄 `#ffe600`，景深内外伸为绿色，景深外为红色），胞体为深绿 `#2f7f55` 以突出黄色和绿色；胞体按解析方式绘制（正交投影下的胶囊是“体育场形”），缩放时保持清晰；交点标记改为白点（原为红色，与景深外红色线段冲突）。
+- The toolbar is centred between the controls panel and the top-right window so that they do not overlap on typical window widths.
+  — 工具栏改为在控制面板与右上角窗口之间居中，常见窗口宽度下不再与右上角窗口重叠。
+
+### Fixed / 修复
+
+- **English caption overflowed the analysis image.** The long single-line caption is gone; the title and a colour legend now sit inside the window.
+  — 英文说明文字超出分析图：原先的长单行说明已去掉，标题与颜色图例现在位于窗口内。
+
 ## [2.0.0] - 2026-11-04
 
 Major release: the program files are renamed (existing bookmarks and shortcuts to `capsule.html` stop working), the interface becomes bilingual, and batch mode is about 15× faster. The simulation results themselves are unchanged from 1.5.0 (bit-identical analysis).

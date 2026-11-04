@@ -13,12 +13,8 @@ document.body.appendChild(renderer.domElement);
 
 // 创建荧光渲染器
 const fluorescenceRenderer = new THREE.WebGLRenderer({ antialias: true });
-fluorescenceRenderer.setSize(400, 400);
+fluorescenceRenderer.setSize(512, 512);  // same size as the analysis canvas (512 x 512)
 document.getElementById('fluorescenceCanvas').appendChild(fluorescenceRenderer.domElement);
-
-// 创建投影场景
-const projectionScene = new THREE.Scene();
-projectionScene.background = new THREE.Color(0xffffff);
 
 // 创建投影相机（正交相机）
 const projectionCamera = new THREE.OrthographicCamera(-2, 2, 2, -2, 0.1, 1000);
@@ -26,11 +22,6 @@ projectionCamera.position.set(0, 10, 0);  // 从正上方看向原点
 projectionCamera.lookAt(0, 0, 0);
 projectionCamera.zoom = 0.8;
 projectionCamera.updateProjectionMatrix();
-
-// 创建投影渲染器
-const projectionRenderer = new THREE.WebGLRenderer({ antialias: true });
-projectionRenderer.setSize(400, 400);
-document.getElementById('projectionCanvas').appendChild(projectionRenderer.domElement);
 
 // 创建侧面视图场景、相机和渲染器
 const sideViewScene = new THREE.Scene();
@@ -74,12 +65,6 @@ const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
 directionalLight.position.set(1, 1, 1);
 scene.add(directionalLight);
 
-// 创建投影场景的平行光源
-const projectionLight = new THREE.DirectionalLight(0xffffff, 1);
-projectionLight.position.copy(projectionCamera.position);
-projectionScene.add(projectionLight);
-projectionScene.add(new THREE.AmbientLight(0x404040));
-
 // 创建图表
 let hairLengthHistChart = null;
 let projectionHairLengthChart = null;  // 添加投影菌毛长度图表
@@ -100,19 +85,31 @@ let showDepthPlanes = true; // 是否显示景深平面
 // ================ Performance helpers ================
 // Shared materials: the per-update views used to allocate fresh materials on every refresh.
 const SILHOUETTE_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
-const PROJECTION_BODY_MATERIAL = new THREE.MeshBasicMaterial({ color: 0x156289, side: THREE.DoubleSide });
-const PROJECTION_HAIR_MATERIAL = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 1.5 });
+// One palette for the fluorescence view, the projection analysis view and their legend.
+// The cell is a mid-dark green so that the yellow "inside" segments (pili overlapped by the cell, shown in the
+// analysis view) and the bright green protruding segments both stand out.
+const FLUORESCENCE_HEX = {
+    background: 0x111111,
+    body: 0x2f7f55,
+    inside: 0xffe600,
+    outside: 0x00ff00,
+    outOfDepth: 0xff0000
+};
+const hexToCss = (hex) => '#' + hex.toString(16).padStart(6, '0');
+const FLUORESCENCE_CSS = {
+    background: hexToCss(FLUORESCENCE_HEX.background),
+    body: hexToCss(FLUORESCENCE_HEX.body),
+    inside: hexToCss(FLUORESCENCE_HEX.inside),
+    outside: hexToCss(FLUORESCENCE_HEX.outside),
+    outOfDepth: hexToCss(FLUORESCENCE_HEX.outOfDepth),
+    intersection: '#ffffff'  // pilus / cell-edge intersections on the analysis image
+};
 const FLUORESCENCE_BODY_MATERIAL = new THREE.MeshBasicMaterial({
-    color: 0xa8e0a8, side: THREE.DoubleSide, transparent: false, opacity: 1.0
+    color: FLUORESCENCE_HEX.body, side: THREE.DoubleSide, transparent: false, opacity: 1.0
 });
-const FLUORESCENCE_INSIDE_MATERIAL = new THREE.LineBasicMaterial({
-    color: 0xffcc00, linewidth: 2, opacity: 0.8, transparent: true
-});
+// Visible pilus segments of the fluorescence view
 const FLUORESCENCE_OUTSIDE_MATERIAL = new THREE.LineBasicMaterial({
-    color: 0x00ff00, linewidth: 2.5, opacity: 0.8, transparent: true
-});
-const FLUORESCENCE_OUT_OF_DEPTH_MATERIAL = new THREE.LineBasicMaterial({
-    color: 0xff0000, linewidth: 2.5, opacity: 1.0, transparent: false
+    color: FLUORESCENCE_HEX.outside, linewidth: 2.5, opacity: 1.0, transparent: false
 });
 
 // Reusable buffers for the 512x512 silhouette analysis
@@ -977,10 +974,6 @@ function updateProjectionViewIfStale() {
     }
 }
 
-let projectionViewLight = null;
-let projectionViewAmbient = null;
-let projectionCapsuleInScene = null;
-
 // options.forceFull: render all views even while batch fast mode is active
 function updateProjectionView(options) {
     const analysisOnly = batchFastMode && !(options && options.forceFull);
@@ -999,15 +992,10 @@ function updateProjectionView(options) {
     // 确保胶囊体的旋转与主胶囊一致
     capsuleBody.rotation.copy(projectionCapsule.rotation);
 
-    // 遍历投影胶囊的所有子对象（共享材质，避免每次刷新都创建新材质）
+    // Collect the cell meshes (the pili stay in projectionCapsule)
     projectionCapsule.traverse((child) => {
         if (child instanceof THREE.Mesh) {
-            // 将胶囊体设置为深蓝色的基础材质
-            child.material = PROJECTION_BODY_MATERIAL;
             capsuleBody.add(child.clone());  // 添加到胶囊体组
-        } else if (child instanceof THREE.Line) {
-            // 将毛发设置为亮绿色
-            child.material = PROJECTION_HAIR_MATERIAL;
         }
     });
 
@@ -1022,7 +1010,7 @@ function updateProjectionView(options) {
     const maxDimension = Math.max(height, radius * 2) * 2.0;
 
     // 使用固定的缩放因子，不再基于相机距离
-    const aspect = projectionRenderer.domElement.width / projectionRenderer.domElement.height;
+    const aspect = 1;  // the analysis and display images are square (512 x 512)
     const baseSize = maxDimension * 1.2; // 添加20%的边距
 
     if (aspect >= 1) {
@@ -1034,153 +1022,44 @@ function updateProjectionView(options) {
 
     projectionCamera.updateProjectionMatrix();
 
+    // World matrices used by the analysis (no renderer touches this copy any more)
+    projectionCapsule.updateMatrixWorld(true);
+    projectionCamera.updateMatrixWorld(true);
+
     if (analysisOnly) {
-        // Same transforms the renderer would have computed, without rendering any view
-        projectionCapsule.updateMatrixWorld(true);
-        projectionCamera.updateMatrixWorld(true);
+        // Analysis only: no view is drawn
         analyzeFluorescenceHairs(projectionCapsule, capsuleBody, { skipDebug: true });
         return;
     }
 
-    // Persistent lights; only the capsule copy is swapped on every refresh
-    if (!projectionViewLight) {
-        while (projectionScene.children.length > 0) {
-            projectionScene.remove(projectionScene.children[0]);
-        }
-        projectionViewLight = new THREE.DirectionalLight(0xffffff, 2);
-        projectionViewAmbient = new THREE.AmbientLight(0x404040, 0.5);
-        projectionScene.add(projectionViewLight);
-        projectionScene.add(projectionViewAmbient);
-    }
-    projectionViewLight.position.copy(camera.position);
-    if (projectionCapsuleInScene) {
-        projectionScene.remove(projectionCapsuleInScene);
-    }
-    projectionScene.add(projectionCapsule);
-    projectionCapsuleInScene = projectionCapsule;
-
     try {
-        // 渲染投影场景
-        projectionRenderer.render(projectionScene, projectionCamera);
-    } catch (error) {
-        console.error('Projection view render error:', error);
-        projectionRenderer.render(projectionScene, projectionCamera);
-    }
-
-    try {
-        // 独立出来的菌毛投影分析功能，放在单独的try-catch块中
-        // 传递投影相机和胶囊的完整信息，确保荧光视图与投影视图保持一致
         updateFluorescenceView(projectionCapsule, capsuleBody, projectionCamera);
     } catch (error) {
-        console.error('Fluorescence view render error:', error);
-        // 尝试简单渲染荧光场景，不进行复杂分析
-        const simpleScene = new THREE.Scene();
-        simpleScene.background = new THREE.Color(0x111111);
-        fluorescenceRenderer.render(simpleScene, projectionCamera);
+        console.error('Fluorescence / analysis view error:', error);
     }
 
     syncViewChangeCache();
 }
 
-// 修改 updateFluorescenceView 函数，添加错误处理
+// ---- Fluorescence / projection analysis window ----
+// One window, two images drawn from the same analysis: the fluorescence view (visible pilus segments only)
+// and the projection analysis view (every analysed segment). They share one mouse-wheel zoom, which only changes
+// how the images are displayed; the analysis itself always uses the fixed orthographic camera.
+let analysisViewActive = false;      // false: fluorescence view, true: projection analysis view
+let analysisViewZoom = 1;
+let analysisViewZoomDirty = false;   // set by the wheel handler, applied once per animation frame
+let analysisViewCanvas = null;       // 2D canvas of the projection analysis view
+const ANALYSIS_VIEW_ZOOM_MIN = 0.5;
+const ANALYSIS_VIEW_ZOOM_MAX = 10;
+const fluorescenceViewCamera = new THREE.OrthographicCamera(-2, 2, 2, -2, 0.1, 1000);
+
 function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
-    // 创建荧光场景
-    const fluorescenceScene = new THREE.Scene();
-    fluorescenceScene.background = new THREE.Color(0x111111); // 深灰色背景，更好地显示对比
-
-    // 添加光源 - 确保光源位置与投影视图一致
-    const fluorescenceLight = new THREE.DirectionalLight(0xffffff, 2);
-    fluorescenceLight.position.copy(camera.position);
-    fluorescenceScene.add(fluorescenceLight);
-    fluorescenceScene.add(new THREE.AmbientLight(0x404040, 0.5));
-
-    // 创建一个组来包含所有荧光视图元素，以便统一应用旋转
-    const fluorescenceGroup = new THREE.Group();
-    fluorescenceScene.add(fluorescenceGroup);
-
-    // 添加胶囊体 - 使用浅绿色
-    const fluorescenceCapsuleBody = new THREE.Group();
-    capsuleBody.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-            const mesh = child.clone();
-            mesh.material = FLUORESCENCE_BODY_MATERIAL;  // light green
-            fluorescenceCapsuleBody.add(mesh);
-        }
-    });
-
-    // 确保胶囊体的旋转与主胶囊一致（四元数）
-    fluorescenceCapsuleBody.quaternion.copy(capsuleBody.quaternion);
-
-    // 将胶囊体添加到荧光组
-    fluorescenceGroup.add(fluorescenceCapsuleBody);
-
-    // 分析菌毛投影并添加到荧光场景
+    // The analysis always runs: it fills the statistics and, when that view is active, the analysis image
     const hairSegments = analyzeFluorescenceHairs(projectionCapsule, capsuleBody);
 
-    // 创建一个组来存放所有菌毛线段
-    const hairLinesGroup = new THREE.Group();
-
-    // 在荧光场景中添加分段菌毛
-    hairSegments.forEach(segment => {
-        // 添加内部段（与胶囊重叠部分）- 黄色
-        const insideGeometry = new THREE.BufferGeometry();
-        const insidePositions = new Float32Array([
-            segment.inside.start.x, segment.inside.start.y, segment.inside.start.z,
-            segment.inside.end.x, segment.inside.end.y, segment.inside.end.z
-        ]);
-        insideGeometry.setAttribute('position', new THREE.BufferAttribute(insidePositions, 3));
-        const insideLine = new THREE.Line(insideGeometry, FLUORESCENCE_INSIDE_MATERIAL);  // yellow
-        hairLinesGroup.add(insideLine);
-
-        // 添加外部段（外伸部分）- 亮绿色
-        const outsideGeometry = new THREE.BufferGeometry();
-        const outsidePositions = new Float32Array([
-            segment.outside.start.x, segment.outside.start.y, segment.outside.start.z,
-            segment.outside.end.x, segment.outside.end.y, segment.outside.end.z
-        ]);
-        outsideGeometry.setAttribute('position', new THREE.BufferAttribute(outsidePositions, 3));
-        const outsideLine = new THREE.Line(outsideGeometry, FLUORESCENCE_OUTSIDE_MATERIAL);  // bright green
-        hairLinesGroup.add(outsideLine);
-
-        // 新增：添加景深范围外的菌毛部分（红色标记）
-        if (segment.depthInfo && !segment.depthInfo.fullyInRange) {
-            // 如果起点在景深范围外
-            if (!segment.depthInfo.startInRange && segment.depthInfo.originalStart) {
-                const outOfDepthStartGeometry = new THREE.BufferGeometry();
-                const outOfDepthStartPositions = new Float32Array([
-                    segment.depthInfo.originalStart.x, segment.depthInfo.originalStart.y, segment.depthInfo.originalStart.z,
-                    segment.depthInfo.start.x, segment.depthInfo.start.y, segment.depthInfo.start.z
-                ]);
-                outOfDepthStartGeometry.setAttribute('position', new THREE.BufferAttribute(outOfDepthStartPositions, 3));
-                const outOfDepthStartLine = new THREE.Line(outOfDepthStartGeometry, FLUORESCENCE_OUT_OF_DEPTH_MATERIAL);
-                hairLinesGroup.add(outOfDepthStartLine);
-            }
-
-            // 如果终点在景深范围外
-            if (!segment.depthInfo.endInRange && segment.depthInfo.originalEnd) {
-                const outOfDepthEndGeometry = new THREE.BufferGeometry();
-                const outOfDepthEndPositions = new Float32Array([
-                    segment.depthInfo.end.x, segment.depthInfo.end.y, segment.depthInfo.end.z,
-                    segment.depthInfo.originalEnd.x, segment.depthInfo.originalEnd.y, segment.depthInfo.originalEnd.z
-                ]);
-                outOfDepthEndGeometry.setAttribute('position', new THREE.BufferAttribute(outOfDepthEndPositions, 3));
-                const outOfDepthEndLine = new THREE.Line(outOfDepthEndGeometry, FLUORESCENCE_OUT_OF_DEPTH_MATERIAL);
-                hairLinesGroup.add(outOfDepthEndLine);
-            }
-        }
-    });
-
-    // 将菌毛线段组添加到主组
-    fluorescenceGroup.add(hairLinesGroup);
-
-    // 添加图例说明（HTML overlay, created once)
-    ensureFluorescenceLegend();
-
-    // 渲染荧光场景 - 使用与投影视图相同的相机
-    fluorescenceRenderer.render(fluorescenceScene, camera);
-
-    // The hair line geometries were created for this frame only: free their GPU buffers
-    hairLinesGroup.children.forEach((line) => line.geometry.dispose());
+    if (!analysisViewActive) {
+        renderFluorescenceImage(capsuleBody, hairSegments, camera);
+    }
 
     // 更新投影菌毛长度直方图
     if (projectionHairLengthChart) {
@@ -1199,10 +1078,54 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
     }
 }
 
-// 在全局变量区域添加一个共享的临时渲染器
+// Fluorescence image: the cell plus the visible pilus segments only (in focus, protruding from the outline and
+// at least VISIBLE_PROJECTION_LENGTH_THRESHOLD long). Parts overlapped by the cell and parts outside the depth of
+// field are not shown; they are drawn in the projection analysis view.
+function renderFluorescenceImage(capsuleBody, hairSegments, camera) {
+    const fluorescenceScene = new THREE.Scene();
+    fluorescenceScene.background = new THREE.Color(FLUORESCENCE_HEX.background);  // dark grey background
+
+    const fluorescenceGroup = new THREE.Group();
+    fluorescenceScene.add(fluorescenceGroup);
+
+    const fluorescenceCapsuleBody = new THREE.Group();
+    capsuleBody.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+            const mesh = child.clone();
+            mesh.material = FLUORESCENCE_BODY_MATERIAL;
+            fluorescenceCapsuleBody.add(mesh);
+        }
+    });
+    fluorescenceCapsuleBody.quaternion.copy(capsuleBody.quaternion);
+    fluorescenceGroup.add(fluorescenceCapsuleBody);
+
+    const hairLinesGroup = new THREE.Group();
+    hairSegments.forEach((segment) => {
+        if (!segment.observation || !segment.observation.isVisible) {
+            return;
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+            segment.outside.start.x, segment.outside.start.y, segment.outside.start.z,
+            segment.outside.end.x, segment.outside.end.y, segment.outside.end.z
+        ]), 3));
+        hairLinesGroup.add(new THREE.Line(geometry, FLUORESCENCE_OUTSIDE_MATERIAL));
+    });
+    fluorescenceGroup.add(hairLinesGroup);
+
+    // Display zoom about the image centre (the cell centre); the analysis camera itself is not changed
+    fluorescenceViewCamera.copy(camera);
+    fluorescenceViewCamera.zoom = camera.zoom * analysisViewZoom;
+    fluorescenceViewCamera.updateProjectionMatrix();
+    fluorescenceRenderer.render(fluorescenceScene, fluorescenceViewCamera);
+
+    // The line geometries were created for this frame only: free their GPU buffers
+    hairLinesGroup.children.forEach((line) => line.geometry.dispose());
+}
+
+// Shared offscreen renderer for the silhouette analysis
 let sharedTempRenderer = null;
 let sharedRenderTarget = null;
-let debugProjectionCanvas = null; // 新增：用于显示临时投影图的画布
 
 function createHairObservation(child, sequentialIndex) {
     const hairIndex = (child.userData && Number.isInteger(child.userData.hairIndex))
@@ -1262,62 +1185,6 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
         sharedTempRenderer.setSize(512, 512);
         sharedRenderTarget = new THREE.WebGLRenderTarget(512, 512);
 
-        // 新增：创建用于显示临时投影图的画布
-        debugProjectionCanvas = document.createElement('canvas');
-        debugProjectionCanvas.width = 512;
-        debugProjectionCanvas.height = 512;
-        debugProjectionCanvas.style.position = 'absolute';
-        debugProjectionCanvas.style.top = '10px';
-        debugProjectionCanvas.style.right = '420px';
-        debugProjectionCanvas.style.border = '1px solid #333';
-        debugProjectionCanvas.style.borderRadius = '5px';
-        debugProjectionCanvas.style.zIndex = '1000';
-        debugProjectionCanvas.style.display = 'none'; // 默认隐藏
-        debugProjectionCanvas.style.boxShadow = '0 0 10px rgba(0,0,0,0.5)';
-
-        // 添加标题
-        const titleDiv = document.createElement('div');
-        titleDiv.style.position = 'absolute';
-        titleDiv.style.top = '10px';
-        titleDiv.style.right = '515px';
-        titleDiv.style.backgroundColor = 'rgba(0,0,0,0.7)';
-        titleDiv.style.color = 'white';
-        titleDiv.style.padding = '5px 10px';
-        titleDiv.style.borderRadius = '5px 5px 0 0';
-        titleDiv.style.fontSize = '12px';
-        titleDiv.style.zIndex = '1000';
-        titleDiv.style.display = 'none';
-        titleDiv.id = 'debugCanvasTitle';
-        titleDiv.textContent = tr('debug.title');
-
-        // 添加切换按钮
-        const toggleButton = document.createElement('button');
-        toggleButton.id = 'debugCanvasToggle';
-        toggleButton.textContent = tr('debug.toggle');
-        toggleButton.style.position = 'absolute';
-        toggleButton.style.top = '450px';
-        toggleButton.style.right = '10px';
-        toggleButton.style.zIndex = '1001';
-        toggleButton.style.padding = '5px 10px';
-        toggleButton.style.backgroundColor = '#4CAF50';
-        toggleButton.style.color = 'white';
-        toggleButton.style.border = 'none';
-        toggleButton.style.borderRadius = '4px';
-        toggleButton.style.cursor = 'pointer';
-
-        toggleButton.addEventListener('click', () => {
-            const isVisible = debugProjectionCanvas.style.display !== 'none';
-            debugProjectionCanvas.style.display = isVisible ? 'none' : 'block';
-            titleDiv.style.display = isVisible ? 'none' : 'block';
-            // The debug canvas is only drawn while visible: redraw it when it is shown
-            if (!isVisible) {
-                updateProjectionView({ forceFull: true });
-            }
-        });
-
-        document.body.appendChild(debugProjectionCanvas);
-        document.body.appendChild(titleDiv);
-        document.body.appendChild(toggleButton);
     }
 
     // 使用与投影视图相同的相机设置
@@ -1345,25 +1212,8 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
         }
     }
 
-    // The debug canvas is drawn only while it is visible (and never in batch fast mode)
-    const drawDebug = !(options && options.skipDebug) &&
-        debugProjectionCanvas.style.display !== 'none';
-    const ctx = drawDebug ? debugProjectionCanvas.getContext('2d') : null;
-
-    if (drawDebug) {
-        // 新增：将投影图显示到调试画布上
-        const imageData = ctx.createImageData(512, 512);
-        for (let p = 0; p < 512 * 512; p++) {
-            const idx = p * 4;
-            const value = projectionMap[p] === 1 ? 255 : 0;
-            imageData.data[idx] = value;     // R
-            imageData.data[idx + 1] = value; // G
-            imageData.data[idx + 2] = value; // B
-            imageData.data[idx + 3] = 255;   // A
-        }
-        // 将图像数据放到画布上
-        ctx.putImageData(imageData, 0, 0);
-    }
+    // The analysis image is drawn only while that view is shown (and never in batch fast mode)
+    const drawDebug = !(options && options.skipDebug) && analysisViewActive;
 
     // 检查点是否在相机视锥体内（相机在本次分析中不变，只需构造一次）
     const frustum = new THREE.Frustum();
@@ -1379,6 +1229,7 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
     const farPlaneDistance = focusDistance + depthOfField / 2;
 
     // 分析菌毛投影
+    const debugDots = [];
     let sequentialHairIndex = 0;
     projectionCapsule.traverse((child) => {
         if (child instanceof THREE.Line) {
@@ -1422,10 +1273,6 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
                 return;
             }
 
-            // 新增：存储菌毛的2D原始起点和终点，用于标记景深范围外的菌毛
-            const originalStart2D = projectPointTo2D(rotatedStart3D, tempCamera, 512, 512);
-            const originalEnd2D = projectPointTo2D(rotatedEnd3D, tempCamera, 512, 512);
-
             // 将3D点转换为2D投影坐标
             const start2D = projectPointTo2D(depthClippedStart3D, tempCamera, 512, 512);
             const end2D = projectPointTo2D(depthClippedEnd3D, tempCamera, 512, 512);
@@ -1434,64 +1281,12 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
             const start2DLimit = projectPointTo2DLimit(depthClippedStart3D, tempCamera, 512, 512);
             const end2DLimit = projectPointTo2DLimit(depthClippedEnd3D, tempCamera, 512, 512);
 
-            // 修复：在调试画布上绘制菌毛线段，使用不同颜色表示景深内外
-            // 确保先设置样式再绘制线段
-            if (drawDebug && originalStart2D && originalEnd2D) {  // 添加空值检查
-                // 根据菌毛在景深范围内外的情况使用不同颜色
-                if (hairInDepthOfField.fullyInRange) {
-                    // 完全在景深范围内 - 绿色
-                    ctx.beginPath();
-                    ctx.moveTo(originalStart2D.x, originalStart2D.y);
-                    ctx.lineTo(originalEnd2D.x, originalEnd2D.y);
-                    ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-                } else {
-                    // 部分在景深范围内 - 橙色
-                    // 先绘制整个线段为橙色
-                    ctx.beginPath();
-                    ctx.moveTo(originalStart2D.x, originalStart2D.y);
-                    ctx.lineTo(originalEnd2D.x, originalEnd2D.y);
-                    ctx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
-
-                    // 再绘制景深范围外的部分为红色
-                    // 计算景深边界点的2D坐标
-                    const depthClippedStart2D = projectPointTo2D(depthClippedStart3D, tempCamera, 512, 512);
-                    const depthClippedEnd2D = projectPointTo2D(depthClippedEnd3D, tempCamera, 512, 512);
-
-                    if (!hairInDepthOfField.startInRange && depthClippedStart2D) {
-                        ctx.beginPath();
-                        ctx.moveTo(originalStart2D.x, originalStart2D.y);
-                        ctx.lineTo(depthClippedStart2D.x, depthClippedStart2D.y);
-                        ctx.strokeStyle = 'rgba(255, 0, 0, 0.9)';
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-                    }
-
-                    if (!hairInDepthOfField.endInRange && depthClippedEnd2D) {
-                        ctx.beginPath();
-                        ctx.moveTo(originalEnd2D.x, originalEnd2D.y);
-                        ctx.lineTo(depthClippedEnd2D.x, depthClippedEnd2D.y);
-                        ctx.strokeStyle = 'rgba(255, 0, 0, 0.9)';
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-                    }
-                }
-            }
-
             // 使用Bresenham算法在投影图上找到菌毛线段与胶囊体边缘的交点
             const intersections = findLineIntersectionsWithCapsule(start2DLimit, end2DLimit, projectionMap);
 
-            // 新增：在调试画布上标记交点
+            // Collect the intersections; they are drawn on the analysis image after the segments
             if (drawDebug) {
-                intersections.forEach(point => {
-                    ctx.beginPath();
-                    ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
-                    ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
-                    ctx.fill();
-                });
+                intersections.forEach(point => debugDots.push(point));
             }
 
             // 如果没有找到交点，检查起点是否在胶囊体内
@@ -1510,7 +1305,8 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
                             end: depthClippedEnd3D.clone() // 起点和终点相同，表示没有外伸部分
                         },
                         // 添加景深信息，确保包含原始点信息
-                        depthInfo: hairInDepthOfField
+                        depthInfo: hairInDepthOfField,
+                        observation: observation
                     });
                     recordHairObservation(observation, 0);
                 } else {
@@ -1525,7 +1321,8 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
                             end: depthClippedEnd3D.clone()
                         },
                         // 添加景深信息，确保包含原始点信息
-                        depthInfo: hairInDepthOfField
+                        depthInfo: hairInDepthOfField,
+                        observation: observation
                     });
                     const projectionLength = distanceBetween2DPoints(start2D, end2D);
                     recordHairObservation(observation, projectionLength);
@@ -1561,7 +1358,8 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
                         end: depthClippedEnd3D.clone()
                     },
                     // 添加景深信息，确保包含原始点信息
-                    depthInfo: hairInDepthOfField
+                    depthInfo: hairInDepthOfField,
+                        observation: observation
                 });
 
                 // 计算外伸长度并记录 - 修改为使用2D投影长度
@@ -1579,7 +1377,8 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
                         end: intersection3D.clone()
                     },
                     // 添加景深信息，确保包含原始点信息
-                    depthInfo: hairInDepthOfField
+                    depthInfo: hairInDepthOfField,
+                        observation: observation
                 });
 
                 const outsideLength = distanceBetween2DPoints(start2D, intersection2D);
@@ -1589,7 +1388,91 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
     });
 
     currentHairObservations.sort((a, b) => a.hairIndex - b.hairIndex);
+
+    if (drawDebug) {
+        drawAnalysisImage(projectionCapsule, hairSegments, tempCamera, debugDots);
+    }
     return hairSegments;
+}
+
+// Projection analysis image (512 x 512). The cell is drawn analytically (an orthographic capsule is a stadium),
+// so it stays sharp when zoomed; the pilus segments use the same colours as the legend:
+// inside the cell outline, protruding in focus, and outside the depth of field.
+function drawAnalysisImage(projectionCapsule, hairSegments, camera, intersectionDots) {
+    if (!analysisViewCanvas) {
+        return;
+    }
+    const size = SILHOUETTE_SIZE;
+    const ctx = analysisViewCanvas.getContext('2d');
+    const toCanvas = (point3D) => {
+        const v = point3D.clone().project(camera);
+        return { x: (v.x + 1) * size / 2, y: (1 - v.y) * size / 2 };
+    };
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = FLUORESCENCE_CSS.background;
+    ctx.fillRect(0, 0, size, size);
+
+    // Display zoom about the image centre; line widths and dot sizes are kept constant on screen
+    const zoom = analysisViewZoom;
+    ctx.translate(size / 2, size / 2);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-size / 2, -size / 2);
+    ctx.lineCap = 'round';
+
+    // Cell: stadium through the projected hemisphere centres
+    const radius = parseFloat(document.getElementById('radiusValue').value);
+    const height = parseFloat(document.getElementById('heightValue').value);
+    const halfCylinder = Math.max(0, height - 2 * radius) / 2;
+    const pixelsPerUnit = size / ((camera.right - camera.left) / camera.zoom);
+    const endA = toCanvas(new THREE.Vector3(0, halfCylinder, 0).applyMatrix4(projectionCapsule.matrixWorld));
+    const endB = toCanvas(new THREE.Vector3(0, -halfCylinder, 0).applyMatrix4(projectionCapsule.matrixWorld));
+    ctx.strokeStyle = FLUORESCENCE_CSS.body;
+    ctx.fillStyle = FLUORESCENCE_CSS.body;
+    ctx.lineWidth = 2 * radius * pixelsPerUnit;
+    ctx.beginPath();
+    ctx.moveTo(endA.x, endA.y);
+    ctx.lineTo(endB.x, endB.y);
+    ctx.stroke();
+    [endA, endB].forEach((end) => {
+        ctx.beginPath();
+        ctx.arc(end.x, end.y, radius * pixelsPerUnit, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    const drawLine = (p3D, q3D, color) => {
+        const p = toCanvas(p3D);
+        const q = toCanvas(q3D);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(q.x, q.y);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2 / zoom;
+        ctx.stroke();
+    };
+
+    hairSegments.forEach((segment) => {
+        drawLine(segment.inside.start, segment.inside.end, FLUORESCENCE_CSS.inside);
+        drawLine(segment.outside.start, segment.outside.end, FLUORESCENCE_CSS.outside);
+        const depth = segment.depthInfo;
+        if (depth && !depth.fullyInRange) {
+            if (!depth.startInRange && depth.originalStart) {
+                drawLine(depth.originalStart, depth.start, FLUORESCENCE_CSS.outOfDepth);
+            }
+            if (!depth.endInRange && depth.originalEnd) {
+                drawLine(depth.end, depth.originalEnd, FLUORESCENCE_CSS.outOfDepth);
+            }
+        }
+    });
+
+    // Pilus / cell-edge intersections (found on the 512 x 512 silhouette map)
+    ctx.fillStyle = FLUORESCENCE_CSS.intersection;
+    intersectionDots.forEach((point) => {
+        ctx.beginPath();
+        ctx.arc(point.x + 0.5, point.y + 0.5, 3 / zoom, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 // 新增：裁剪线段到景深范围内的函数
@@ -2767,44 +2650,105 @@ function findLineIntersectionsWithCapsule(start, end, projectionMap) {
     return intersections;
 }
 
-// Fluorescence legend (HTML overlay). Created once, text refreshed on language change.
-function renderFluorescenceLegendText(legendDiv) {
-    const swatch = (color, extra) =>
-        `<span style="display:inline-block;width:12px;height:2px;background-color:${color};margin-right:5px;${extra || ''}"></span>`;
-    legendDiv.innerHTML =
-        `<div style="margin-bottom:4px;">${swatch('#88cc88')}${tr('legend.body')}</div>` +
-        `<div style="margin-bottom:4px;">${swatch('#ffcc00')}${tr('legend.inside')}</div>` +
-        `<div style="margin-bottom:4px;">${swatch('#00ff00')}${tr('legend.outside')}</div>` +
-        `<div>${swatch('#ff0000', 'border-top:1px dashed #ff0000;')}${tr('legend.outOfDepth')}</div>`;
+// Legend swatches share FLUORESCENCE_CSS with the fluorescence view and the projection analysis image
+function legendLineSwatch(color) {
+    return `<span style="display:inline-block;width:14px;height:3px;background-color:${color};margin-right:5px;vertical-align:middle;"></span>`;
 }
 
-function ensureFluorescenceLegend() {
-    const fluorescenceCanvas = document.getElementById('fluorescenceCanvas');
-    if (!fluorescenceCanvas || document.getElementById('fluorescenceLegendText')) {
+function legendDotSwatch(color) {
+    return `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background-color:${color};margin:0 8px 0 3px;vertical-align:middle;"></span>`;
+}
+
+// Colour legend (HTML overlay in the window corner); its rows follow the active view and the language
+function renderViewLegend(legendDiv) {
+    const row = (swatch, text, isLast) =>
+        `<div style="margin-bottom:${isLast ? 0 : 4}px;">${swatch}${text}</div>`;
+    if (analysisViewActive) {
+        legendDiv.innerHTML =
+            row(legendLineSwatch(FLUORESCENCE_CSS.body), tr('legend.body')) +
+            row(legendLineSwatch(FLUORESCENCE_CSS.inside), tr('legend.inside')) +
+            row(legendLineSwatch(FLUORESCENCE_CSS.outside), tr('legend.outside')) +
+            row(legendLineSwatch(FLUORESCENCE_CSS.outOfDepth), tr('legend.outOfDepth')) +
+            row(legendDotSwatch(FLUORESCENCE_CSS.intersection), tr('legend.intersection'), true);
+    } else {
+        legendDiv.innerHTML =
+            row(legendLineSwatch(FLUORESCENCE_CSS.body), tr('legend.body')) +
+            row(legendLineSwatch(FLUORESCENCE_CSS.outside), tr('legend.visible'), true);
+    }
+}
+
+// Title, toggle button text, visible image and legend for the active view
+function applyAnalysisViewMode() {
+    const titleElement = document.getElementById('fluorescenceViewTitle');
+    const toggleButton = document.getElementById('analysisViewToggle');
+    if (titleElement) {
+        titleElement.textContent = tr(analysisViewActive ? 'view.analysis' : 'view.fluorescence');
+    }
+    if (toggleButton) {
+        toggleButton.textContent = tr(analysisViewActive ? 'btn.toFluorescence' : 'btn.toAnalysis');
+    }
+    fluorescenceRenderer.domElement.style.display = analysisViewActive ? 'none' : 'block';
+    if (analysisViewCanvas) {
+        analysisViewCanvas.style.display = analysisViewActive ? 'block' : 'none';
+    }
+    const legendDiv = document.getElementById('fluorescenceLegendText');
+    if (legendDiv) {
+        renderViewLegend(legendDiv);
+    }
+}
+
+// Build the analysis canvas, legend overlay, toggle button, wheel zoom and double-click reset
+function setupAnalysisView() {
+    const container = document.getElementById('fluorescenceCanvas');
+    if (!container) {
         return;
     }
+    fluorescenceRenderer.domElement.style.display = 'block';
+
+    analysisViewCanvas = document.createElement('canvas');
+    analysisViewCanvas.width = SILHOUETTE_SIZE;
+    analysisViewCanvas.height = SILHOUETTE_SIZE;
+    analysisViewCanvas.style.display = 'none';
+    container.appendChild(analysisViewCanvas);
+
     const legendDiv = document.createElement('div');
     legendDiv.id = 'fluorescenceLegendText';
     legendDiv.style.position = 'absolute';
     legendDiv.style.bottom = '5px';
     legendDiv.style.right = '5px';
     legendDiv.style.color = 'white';
-    legendDiv.style.fontSize = '10px';
+    legendDiv.style.fontSize = '11px';
     legendDiv.style.fontFamily = 'Arial, sans-serif';
     legendDiv.style.textShadow = '1px 1px 1px black';
-    legendDiv.style.pointerEvents = 'none'; // 防止干扰鼠标事件
+    legendDiv.style.pointerEvents = 'none';  // do not intercept mouse events
     legendDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
     legendDiv.style.padding = '5px';
     legendDiv.style.borderRadius = '3px';
-    renderFluorescenceLegendText(legendDiv);
-    fluorescenceCanvas.appendChild(legendDiv);
-}
+    container.appendChild(legendDiv);
 
-function refreshFluorescenceLegend() {
-    const legendDiv = document.getElementById('fluorescenceLegendText');
-    if (legendDiv) {
-        renderFluorescenceLegendText(legendDiv);
-    }
+    document.getElementById('analysisViewToggle').addEventListener('click', () => {
+        analysisViewActive = !analysisViewActive;
+        applyAnalysisViewMode();
+        if (!batchFastMode) {
+            updateProjectionView({ forceFull: true });  // draw the newly shown image
+        }
+    });
+
+    // Mouse wheel: zoom the displayed image (shared by both views)
+    container.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        const factor = Math.exp(-event.deltaY * 0.0015);
+        analysisViewZoom = Math.min(ANALYSIS_VIEW_ZOOM_MAX, Math.max(ANALYSIS_VIEW_ZOOM_MIN, analysisViewZoom * factor));
+        analysisViewZoomDirty = true;
+    }, { passive: false });
+
+    // Double click: back to the default zoom
+    container.addEventListener('dblclick', () => {
+        analysisViewZoom = 1;
+        analysisViewZoomDirty = true;
+    });
+
+    applyAnalysisViewMode();
 }
 
 // ================ 控制函数 ================
@@ -3022,6 +2966,94 @@ function setupRotationControls() {
             updateProjectionView();
         });
     });
+
+    // ---- Drag with the left mouse button in the main view to rotate the bacterium ----
+    // The camera stays fixed (as in the microscope model); the cell turns about the screen's vertical and horizontal
+    // axes, like a trackball. After every step the pose is written back as XYZ Euler angles rounded to 0.01 deg and
+    // the cell is rebuilt from exactly those angles, so the controls and the exports still match the pose exactly.
+    const DRAG_DEGREES_PER_PIXEL = 0.5;
+    const dragSurface = renderer.domElement;
+    const dragScreenUp = new THREE.Vector3();
+    const dragScreenRight = new THREE.Vector3();
+    const dragRotation = new THREE.Quaternion();
+    const dragPitch = new THREE.Quaternion();
+    let dragPointerId = null;
+    let dragLastX = 0;
+    let dragLastY = 0;
+
+    dragSurface.style.touchAction = 'none';  // let touch screens drag too
+    dragSurface.style.cursor = 'grab';
+
+    function writeAnglesFromQuaternion(quaternion) {
+        const euler = new THREE.Euler().setFromQuaternion(quaternion, 'XYZ');
+        const degrees = [euler.x, euler.y, euler.z].map(
+            (radians) => Number(THREE.MathUtils.radToDeg(radians).toFixed(2))
+        );
+        axes.forEach((axis, index) => {
+            document.getElementById(`rotation${axis}Value`).value = degrees[index];
+            document.getElementById(`rotation${axis}`).value = degrees[index];  // the slider itself snaps to whole degrees
+        });
+        applyControlRotation();  // rebuild the pose from the written angles
+    }
+
+    function endDrag(event) {
+        if (dragPointerId === null || event.pointerId !== dragPointerId) {
+            return;
+        }
+        if (dragSurface.hasPointerCapture && dragSurface.hasPointerCapture(dragPointerId)) {
+            dragSurface.releasePointerCapture(dragPointerId);
+        }
+        dragPointerId = null;
+        dragSurface.style.cursor = 'grab';
+    }
+
+    dragSurface.addEventListener('pointerdown', (event) => {
+        // Left button / primary touch only; the controls are locked while a batch run is going on
+        if (event.button !== 0 || dragPointerId !== null || batchFastMode) {
+            return;
+        }
+        event.preventDefault();
+        dragPointerId = event.pointerId;
+        dragLastX = event.clientX;
+        dragLastY = event.clientY;
+        try {
+            dragSurface.setPointerCapture(dragPointerId);  // keep receiving moves when the pointer leaves the canvas
+        } catch (error) {
+            // capture is only a convenience; dragging still works while the pointer stays over the canvas
+        }
+        dragSurface.style.cursor = 'grabbing';
+    });
+
+    dragSurface.addEventListener('pointermove', (event) => {
+        if (event.pointerId !== dragPointerId || batchFastMode) {
+            return;
+        }
+        const deltaX = event.clientX - dragLastX;
+        const deltaY = event.clientY - dragLastY;
+        dragLastX = event.clientX;
+        dragLastY = event.clientY;
+        if (deltaX === 0 && deltaY === 0) {
+            return;
+        }
+
+        // Screen axes in world coordinates: drag right turns the near side to the right, drag down turns it down
+        dragScreenUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+        dragScreenRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+        dragRotation.setFromAxisAngle(dragScreenUp, THREE.MathUtils.degToRad(deltaX * DRAG_DEGREES_PER_PIXEL));
+        dragPitch.setFromAxisAngle(dragScreenRight, THREE.MathUtils.degToRad(deltaY * DRAG_DEGREES_PER_PIXEL));
+        dragRotation.multiply(dragPitch);
+        capsule.quaternion.premultiply(dragRotation).normalize();
+
+        writeAnglesFromQuaternion(capsule.quaternion);
+
+        // Same follow-up as the sliders: the animation loop renders the main view and refreshes the analysis;
+        // the side view is refreshed with a short debounce
+        mainViewDirty = true;
+        debouncedUpdateSideView();
+    });
+
+    dragSurface.addEventListener('pointerup', endDrag);
+    dragSurface.addEventListener('pointercancel', endDrag);
 }
 
 // 毛发控制
@@ -3393,11 +3425,86 @@ setupExportButton();
 setupHelpButton();
 setupBatchSimulationButton();
 
-// 初始化投影视图和荧光视图
-// 确保在初始化时就创建投影视图和荧光视图
+// Fluorescence / analysis window, then the first analysis
+setupAnalysisView();
 updateProjectionView();
 
 // 修改 animate 函数中的旋转跟踪部分
+// ---- Orientation gizmo (bottom left, right of the true-length histogram) ----
+// Shows the bacterium's own X / Y / Z axes as seen from the camera, like the axis widget of a modelling program.
+// Body frame -> view frame: inverse(camera rotation) * capsule rotation. At zero rotation with the default camera:
+// X points right, Y up (the long axis), Z towards the viewer.
+const AXIS_GIZMO_AXES = [
+    { name: 'X', vector: new THREE.Vector3(1, 0, 0), color: '#e53935' },
+    { name: 'Y', vector: new THREE.Vector3(0, 1, 0), color: '#43a047' },
+    { name: 'Z', vector: new THREE.Vector3(0, 0, 1), color: '#1e88e5' }
+];
+const axisGizmoRotation = new THREE.Quaternion();
+
+function drawAxisGizmo() {
+    const canvas = document.getElementById('axisGizmoCanvas');
+    if (!canvas || canvas.clientWidth <= 0) {
+        return;
+    }
+    const dpr = window.devicePixelRatio || 1;
+    const cssSize = canvas.clientWidth;
+    const pixelSize = Math.round(cssSize * dpr);
+    if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
+        canvas.width = pixelSize;
+        canvas.height = pixelSize;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssSize, cssSize);
+
+    const center = cssSize / 2;
+    const axisLength = cssSize * 0.34;
+    const tipRadius = Math.max(6, cssSize * 0.085);
+
+    axisGizmoRotation.copy(camera.quaternion).invert().multiply(capsule.quaternion);
+
+    // Far axes first so the near ones are drawn on top
+    const projected = AXIS_GIZMO_AXES.map((axis) => {
+        const v = axis.vector.clone().applyQuaternion(axisGizmoRotation);
+        return { axis, x: v.x, y: v.y, z: v.z };
+    }).sort((a, b) => a.z - b.z);
+
+    ctx.lineCap = 'round';
+    projected.forEach(({ axis, x, y, z }) => {
+        const depthAlpha = 0.6 + 0.4 * (z + 1) / 2;  // axes pointing away from the viewer are slightly faded
+
+        // Negative half: short faint stub
+        ctx.globalAlpha = 0.35 * depthAlpha;
+        ctx.strokeStyle = axis.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(center, center);
+        ctx.lineTo(center - x * axisLength * 0.45, center + y * axisLength * 0.45);
+        ctx.stroke();
+
+        // Positive half: solid line with a lettered tip
+        const tipX = center + x * axisLength;
+        const tipY = center - y * axisLength;
+        ctx.globalAlpha = depthAlpha;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(center, center);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+
+        ctx.fillStyle = axis.color;
+        ctx.beginPath();
+        ctx.arc(tipX, tipY, tipRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${Math.round(tipRadius * 1.15)}px Arial, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(axis.name, tipX, tipY + 0.5);
+    });
+    ctx.globalAlpha = 1;
+}
+
 // What the main view was last rendered for
 const mainViewState = {
     position: new THREE.Vector3(NaN, NaN, NaN),
@@ -3417,6 +3524,13 @@ function animate() {
         mainViewState.quaternion.copy(camera.quaternion);
         mainViewState.capsuleQuaternion.copy(capsule.quaternion);
         mainViewDirty = true;
+        drawAxisGizmo();
+    }
+
+    // Mouse-wheel zoom of the fluorescence / analysis image: redraw once per frame
+    if (analysisViewZoomDirty && !batchFastMode) {
+        analysisViewZoomDirty = false;
+        updateProjectionView({ forceFull: true });
     }
 
     // Projection views: refresh if they were computed for a different camera/pose.
@@ -3446,16 +3560,8 @@ animate();
 // Language switch: refresh everything that is not static markup
 onLanguageChange(() => {
     applyChartLanguage();
-    refreshFluorescenceLegend();
 
-    const debugTitle = document.getElementById('debugCanvasTitle');
-    if (debugTitle) {
-        debugTitle.textContent = tr('debug.title');
-    }
-    const debugToggle = document.getElementById('debugCanvasToggle');
-    if (debugToggle) {
-        debugToggle.textContent = tr('debug.toggle');
-    }
+    applyAnalysisViewMode();
 
     updateAnchorRatioText(
         parseFloat(document.getElementById('radiusValue').value),
@@ -3478,6 +3584,7 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
     mainViewDirty = true;
+    drawAxisGizmo();  // the gizmo width follows the window width
 
     // 更新投影视图
     updateProjectionViewAfterResize();
@@ -3571,10 +3678,5 @@ window.addEventListener('DOMContentLoaded', () => {
         console.warn('Projection statistics container not found');
     }
 
-    // 检查投影画布是否存在
-    const projectionCanvas = document.getElementById('projectionCanvas');
-    if (!projectionCanvas) {
-        console.warn('Projection canvas container not found');
-    }
     // The initial projection view is already computed by the top-level updateProjectionView() call
 });
