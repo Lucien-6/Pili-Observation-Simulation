@@ -11,6 +11,25 @@
             overflow: hidden;
         }
 
+        /* Language switch: bilingual blocks are toggled by the <html lang> attribute */
+        html[lang="en"] .lang-zh {
+            display: none !important;
+        }
+
+        html:not([lang="en"]) .lang-en {
+            display: none !important;
+        }
+
+        /* English labels are longer */
+        html[lang="en"] .control-group label {
+            width: 108px;
+            white-space: nowrap;
+        }
+
+        html[lang="en"] #sideView {
+            left: 360px;
+        }
+
         canvas {
             display: block;
         }
@@ -297,102 +316,115 @@
 <body>
     <div id="controls">
         <div class="control-section">
-            <h3>菌身尺寸</h3>
+            <h3 data-i18n="sec.size">菌身尺寸</h3>
             <div class="control-group">
-                <label>胶囊高度:</label>
+                <label data-i18n="lbl.height">胶囊高度:</label>
                 <input type="range" id="height" min="1" max="5" value="2" step="0.1">
                 <input type="number" id="heightValue" value="2" min="1" max="5" step="0.1">
             </div>
             <div class="control-group">
-                <label>半球半径:</label>
+                <label data-i18n="lbl.radius">半球半径:</label>
                 <input type="range" id="radius" min="0.1" max="1" value="0.5" step="0.1">
                 <input type="number" id="radiusValue" value="0.5" min="0.1" max="1" step="0.1">
             </div>
         </div>
 
-        <!-- 新增景深控制部分 -->
+        <!-- Depth of field controls -->
         <div class="control-section">
-            <h3>景深设置</h3>
+            <h3 data-i18n="sec.dof">景深设置</h3>
             <div class="control-group">
-                <label for="depthOfField">景深范围:</label>
+                <label for="depthOfField" data-i18n="lbl.dofRange">景深范围:</label>
                 <input type="range" id="depthOfField" min="0" max="10" step="0.1" value="5">
                 <input type="number" id="depthOfFieldValue" min="0" max="10" step="0.1" value="5">
             </div>
             <div class="control-group">
-                <label for="focusDistance">焦点距离:</label>
+                <label for="focusDistance" data-i18n="lbl.focus">焦点距离:</label>
                 <input type="range" id="focusDistance" min="-5" max="5" step="0.1" value="0">
                 <input type="number" id="focusDistanceValue" min="-5" max="5" step="0.1" value="0">
             </div>
-            <!-- 添加侧面视图切换按钮 -->
+            <!-- Side view toggle -->
             <div class="control-group">
-                <button id="showSideView">显示景深侧面视图</button>
+                <button id="showSideView" data-i18n="btn.showSideView">显示景深侧面视图</button>
             </div>
         </div>
 
         <div class="control-section">
-            <h3>旋转控制</h3>
+            <h3 data-i18n="sec.rotation">旋转控制</h3>
             <div class="control-group">
-                <label>X轴旋转:</label>
+                <label data-i18n="lbl.rotX">X轴旋转:</label>
                 <input type="range" id="rotationX" min="-180" max="180" value="0" step="1">
-                <input type="number" id="rotationXValue" value="0" min="-180" max="180">
+                <input type="number" id="rotationXValue" value="0" min="-180" max="180" step="any">
             </div>
             <div class="control-group">
-                <label>Y轴旋转:</label>
+                <label data-i18n="lbl.rotY">Y轴旋转:</label>
                 <input type="range" id="rotationY" min="-180" max="180" value="0" step="1">
-                <input type="number" id="rotationYValue" value="0" min="-180" max="180">
+                <input type="number" id="rotationYValue" value="0" min="-180" max="180" step="any">
             </div>
             <div class="control-group">
-                <label>Z轴旋转:</label>
+                <label data-i18n="lbl.rotZ">Z轴旋转:</label>
                 <input type="range" id="rotationZ" min="-180" max="180" value="0" step="1">
-                <input type="number" id="rotationZValue" value="0" min="-180" max="180">
+                <input type="number" id="rotationZValue" value="0" min="-180" max="180" step="any">
             </div>
             <div class="control-group">
-                <button id="resetRotation" style="margin-top: 10px; padding: 5px 10px;">复原姿态</button>
+                <button id="resetRotation" style="margin-top: 10px; padding: 5px 10px;" data-i18n="btn.resetRotation">复原姿态</button>
             </div>
         </div>
 
         <div class="control-section">
-            <h3>菌毛控制</h3>
+            <h3 data-i18n="sec.pili">菌毛控制</h3>
             <div class="control-group">
-                <label>菌毛数量:</label>
+                <label data-i18n="lbl.count">菌毛数量:</label>
                 <input type="range" id="hairCount" min="0" max="50" value="15" step="1">
                 <input type="number" id="hairCountValue" value="15" min="0" max="50">
             </div>
             <div class="control-group">
-                <label>平均长度:</label>
+                <label data-i18n="lbl.meanLength">平均长度:</label>
                 <input type="range" id="hairLength" min="0.5" max="10" value="2.0" step="0.1">
                 <input type="number" id="hairLengthValue" value="2.0" min="0.5" max="10" step="0.1">
             </div>
             <div class="control-group">
-                <label>形状参数:</label>
+                <label data-i18n="lbl.concentration">集中度:</label>
                 <input type="range" id="shapeParam" min="0.5" max="10" value="3.0" step="0.1">
                 <input type="number" id="shapeParamValue" value="3.0" min="0.5" max="10" step="0.1">
             </div>
             <div class="control-group">
-                <button id="regenerateHairs" style="margin-top: 10px; padding: 5px 10px;">重新生成菌毛</button>
+                <label for="anchorMode" style="width: auto;" data-i18n="lbl.anchorMode">固着点分配:</label>
+                <select id="anchorMode">
+                    <option value="fixed" selected data-i18n="opt.anchorFixed">固定比例（实验观测）</option>
+                    <option value="area" data-i18n="opt.anchorArea">按表面积自适应</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="cylinderShare" data-i18n="lbl.cylinderShare">圆柱占比:</label>
+                <input type="range" id="cylinderShare" min="0" max="100" value="55" step="1">
+                <input type="number" id="cylinderShareValue" value="55" min="0" max="100" step="1">
+                <div id="anchorRatioText" style="font-size: 12px; color: #666; margin-top: 4px;"></div>
+            </div>
+            <div class="control-group">
+                <button id="regenerateHairs" style="margin-top: 10px; padding: 5px 10px;" data-i18n="btn.regenerate">重新生成菌毛</button>
             </div>
         </div>
     </div>
 
     <div id="projectionView">
-        <div class="view-title">投影视图</div>
+        <div class="view-title" data-i18n="view.projection">投影视图</div>
         <div id="projectionCanvas"></div>
     </div>
 
-    <!-- 添加侧面视图容器 -->
+    <!-- Side view container -->
     <div id="sideView">
-        <div class="view-title">景深侧面视图 <button id="toggleSideView">隐藏</button></div>
+        <div class="view-title"><span data-i18n="view.side">景深侧面视图</span> <button id="toggleSideView" data-i18n="btn.hide">隐藏</button></div>
         <div id="sideViewCanvas"></div>
     </div>
 
-    <!-- 添加荧光模拟视图容器 -->
+    <!-- Fluorescence view container -->
     <div id="fluorescenceView">
-        <div class="view-title">荧光视图</div>
+        <div class="view-title" data-i18n="view.fluorescence">荧光视图</div>
         <div id="fluorescenceCanvas"></div>
     </div>
 
     <div id="distributionView">
-        <div class="view-title">菌毛真实长度分布</div>
+        <div class="view-title" data-i18n="view.trueLength">菌毛真实长度分布</div>
         <div class="chart-container">
             <div class="chart" id="hairLengthHistChart" style="width: 100%;">
                 <canvas id="hairLengthHistCanvas"></canvas>
@@ -400,11 +432,11 @@
         </div>
         <div class="tooltip" id="chartTooltip"></div>
     </div>
-    
-    <!-- 修改投影菌毛统计视图容器的样式 -->
+
+    <!-- Projected pilus statistics container -->
     <div id="projectionStatsView"
         style="position: fixed; bottom: 10px; right: 10px; width: 600px; height: 350px; background: rgba(255, 255, 255, 0.9); border: 1px solid #ccc; border-radius: 5px; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1); z-index: 1000; display: flex; flex-direction: column;">
-        <div class="view-title" style="padding: 5px 10px; font-weight: bold; border-bottom: 1px solid #ccc;">菌毛投影长度分布</div>
+        <div class="view-title" style="padding: 5px 10px; font-weight: bold; border-bottom: 1px solid #ccc;" data-i18n="view.projLength">菌毛投影长度分布</div>
         <div class="chart-container" style="flex: 1; padding: 5px;">
             <div class="chart" id="projectionHairLengthChart" style="height: 280px;">
                 <canvas id="projectionHairLengthCanvas"></canvas>
@@ -414,7 +446,7 @@
             style="padding: 5px; font-size: 14px; white-space: normal; overflow: hidden; text-overflow: ellipsis;"></div>
     </div>
 
-    <!-- 添加功能按钮 -->
+    <!-- Function buttons -->
     <div id="functionButtons">
         <button id="exportBtn" class="function-btn">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -423,10 +455,10 @@
                 <polyline points="7 10 12 15 17 10"></polyline>
                 <line x1="12" y1="15" x2="12" y2="3"></line>
             </svg>
-            导出
+            <span data-i18n="btn.export">导出</span>
         </button>
         <button id="batchBtn" class="function-btn">
-            <i class="fas fa-tasks"></i> 批量模拟
+            <i class="fas fa-tasks"></i> <span data-i18n="btn.batch">批量模拟</span>
         </button>
         <button id="helpBtn" class="function-btn">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -435,56 +467,67 @@
                 <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
                 <line x1="12" y1="17" x2="12.01" y2="17"></line>
             </svg>
-            帮助
+            <span data-i18n="btn.help">帮助</span>
+        </button>
+        <button id="langBtn" class="function-btn" data-i18n-title="btn.langTitle" title="切换到 English">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            <span data-i18n="btn.lang">English</span>
         </button>
     </div>
 
-    <!-- 在body结束标签前添加批量模拟对话框 -->
+    <!-- Batch simulation dialog -->
     <div id="batchDialog" style="display: none;">
-        <h3>批量模拟设置</h3>
-        <p>系统将使用当前参数多次重新生成菌毛，并在不同姿态下进行分析。</p>
-    
+        <h3 data-i18n="batch.title">批量模拟设置</h3>
+        <p data-i18n="batch.desc">系统将使用当前参数多次重新生成菌毛，并在不同姿态下进行分析。</p>
+
         <div class="export-options">
             <div class="export-option">
-                <label for="modelCount">模型数量:</label>
+                <label for="modelCount" data-i18n="batch.modelCount">模型数量:</label>
                 <input type="number" id="modelCount" value="5" min="1" max="20" style="width: 60px;">
             </div>
             <div class="export-option">
-                <label for="angleCount">每个模型的姿态数:</label>
+                <label for="angleCount" data-i18n="batch.angleCount">每个模型的姿态数:</label>
                 <input type="number" id="angleCount" value="10" min="1" max="50" style="width: 60px;">
             </div>
         </div>
-    
+
         <div style="margin-top: 15px;">
             <progress id="batchProgress" value="0" max="100" style="width: 100%; display: none;"></progress>
             <p id="progressText" style="text-align: center; margin-top: 5px;"></p>
         </div>
-    
+
         <div class="export-dialog-buttons">
-            <button id="cancelBatch">取消</button>
-            <button id="cancelRunningBatch" style="background-color: #f44336; color: white; display: none;">停止模拟</button>
-            <button id="startBatch" style="background-color: #4CAF50; color: white;">开始模拟</button>
+            <button id="cancelBatch" data-i18n="btn.cancel">取消</button>
+            <button id="cancelRunningBatch" style="background-color: #f44336; color: white; display: none;" data-i18n="batch.stop">停止模拟</button>
+            <button id="startBatch" style="background-color: #4CAF50; color: white;" data-i18n="batch.start">开始模拟</button>
         </div>
     </div>
-    
-    <!-- 帮助对话框 -->
+
+    <!-- Help dialog (one block per language, toggled by <html lang>) -->
     <div id="helpDialog">
         <button class="close-btn">&times;</button>
-        <h2>3D胶囊形细菌模型使用帮助</h2>
-        <div class="help-content">
+        <h2 data-i18n="help.title">3D胶囊形细菌模型使用帮助</h2>
+
+        <div class="help-content lang-zh">
             <h3>基本操作</h3>
             <ul>
                 <li><strong>缩放：</strong> 使用鼠标滚轮可以放大或缩小模型视图</li>
-                <li><strong>旋转：</strong> 通过控制面板中的旋转滑块调整模型姿态</li>
+                <li><strong>旋转：</strong> 通过控制面板中的旋转滑块调整模型姿态。三个角度为 XYZ 欧拉角（度），与批量模拟和导出文件使用同一约定，把导出的角度填入即可复现该姿态</li>
                 <li><strong>重置：</strong> 点击"复原姿态"按钮可以重置模型到初始位置</li>
+                <li><strong>语言：</strong> 点击顶部的语言按钮可在中文与 English 之间切换，选择会被记住；导出的 Excel/JSON、图表和图片同样使用当前语言</li>
             </ul>
-    
+
             <h3>模型参数设置</h3>
             <ul>
                 <li><strong>菌身尺寸：</strong>
                     <ul>
                         <li>胶囊高度：调整胶囊体的整体长度</li>
-                        <li>半球半径：调整胶囊体两端半球的半径</li>
+                        <li>半球半径：调整胶囊体两端半球的半径（需满足 高度 ≥ 2 × 半径，两个控件会自动联动限制）</li>
                     </ul>
                 </li>
                 <li><strong>景深设置：</strong>
@@ -497,13 +540,14 @@
                 <li><strong>菌毛控制：</strong>
                     <ul>
                         <li>菌毛数量：调整模型表面菌毛的总数</li>
+                        <li>固着点分配：默认“固定比例”，圆柱面 55%、两个半球面 45%（实验观测值），可在“圆柱占比”中修改；也可选择“按表面积自适应”，按圆柱与半球的表面积比例分配</li>
                         <li>平均长度：设置菌毛长度的平均值</li>
-                        <li>形状参数：伽马分布 Gamma(k, θ) 的形状 k；尺度 θ = 平均长度 / k，因此均值等于所设平均长度</li>
+                        <li>集中度：即伽马分布 Gamma(k, θ) 的形状参数 k（只影响菌毛长度分布的离散程度，与菌毛本身的形状无关）；尺度 θ = 平均长度 / k，因此均值等于所设平均长度。k 越大长度越集中</li>
                         <li>重新生成：点击"重新生成菌毛"按钮可以使用当前参数重新生成菌毛</li>
                     </ul>
                 </li>
             </ul>
-    
+
             <h3>视图说明</h3>
             <ul>
                 <li><strong>主视图：</strong> 显示3D胶囊细菌模型，可通过滚轮缩放</li>
@@ -524,73 +568,184 @@
                 <li><strong>菌毛长度分布：</strong> 显示菌毛真实长度的统计分布直方图</li>
                 <li><strong>菌毛投影长度分布：</strong> 显示投影视图中菌毛外伸长度的统计分布，包含均值、标准差等统计信息</li>
             </ul>
-    
+
             <h3>功能按钮</h3>
             <ul>
                 <li><strong>导出：</strong> 导出当前模型的数据
                     <ul>
                         <li>可选择导出模型参数、菌毛真实长度数据和投影长度数据</li>
-                        <li>支持JSON和Excel两种导出格式</li>
+                        <li>支持JSON和Excel两种导出格式；Excel 中的长度和统计量均为数值格式，可直接用于求和与作图</li>
+                        <li>模型参数中包含固着点分配方式、圆柱占比，以及旋转角度（XYZ 欧拉角，单位度）</li>
                     </ul>
                 </li>
                 <li><strong>批量模拟：</strong> 进行多次模拟并收集数据
                     <ul>
-                        <li>可设置模型数量和每个模型的姿态数</li>
-                        <li>系统会自动生成多个模型并在不同姿态下分析菌毛投影</li>
+                        <li>可设置模型数量和每个模型的姿态数；使用当前的尺寸、菌毛参数和固着点分配设置</li>
+                        <li>系统会自动生成多个模型并在不同姿态下分析菌毛投影；每个姿态为空间中均匀随机取向（各向同性）</li>
                         <li>真实长度每个模型只记录一次；观测表按菌毛编号与该姿态的投影长度配对</li>
                         <li>适用于获取统计学意义上的菌毛投影长度分布</li>
+                        <li>每个姿态的旋转角度会写入 Excel（“姿态角参数”表），填入左侧旋转控件即可精确复现该姿态；“数据说明”表记录了各项约定</li>
+                        <li>批量运行期间控制面板被锁定，可随时点击“停止模拟”取消；结束后参数自动恢复。运行时视图只做低频预览，以换取更快的分析速度</li>
                     </ul>
                 </li>
                 <li><strong>帮助：</strong> 显示此帮助信息</li>
+                <li><strong>语言：</strong> 在中文与 English 之间切换界面语言</li>
             </ul>
-    
+
             <h3>分析工具</h3>
             <ul>
                 <li><strong>投影分析图：</strong> 可通过荧光视图下方的按钮显示/隐藏投影分析图，用于查看菌毛与胞体边缘的交点</li>
                 <li><strong>统计信息：</strong> 菌毛投影长度分布图下方显示当前视角下可见菌毛的数量、平均长度、标准差等统计信息。可见定义为：焦深范围内、轮廓外伸的投影长度 ≥ 0.8（与模型长度单位相同）</li>
             </ul>
-    
+
             <h3>使用技巧</h3>
             <ul>
                 <li>调整景深范围和焦点距离可以模拟显微镜观察中的聚焦效果</li>
-                <li>形状参数越大，菌毛长度分布越集中；越小，分布越分散。长度按标准伽马分布 Gamma(k, θ) 抽样</li>
+                <li>集中度越大，菌毛长度分布越集中；越小，分布越分散。长度按标准伽马分布 Gamma(k, θ) 抽样</li>
                 <li>通过旋转模型可以观察不同角度下菌毛的投影效果</li>
                 <li>批量模拟功能适合进行大量数据采集和统计分析</li>
+                <li>固着点分配默认采用实验观测的 55% / 45%；若想比较两种假设，可切换为“按表面积自适应”后重新批量模拟</li>
+                <li>修改固着点分配、菌毛数量或尺寸后菌毛会自动重新生成；修改平均长度和集中度后需点击“重新生成菌毛”</li>
             </ul>
 
-            <!-- 添加作者信息部分 -->
             <h3>关于作者</h3>
             <div style="border-top: 1px solid #eee; padding-top: 10px; margin-top: 15px;">
                 <p><strong>开发者：</strong> Lucien</p>
                 <p><strong>单位：</strong> 电子科技大学软物质与微生物技术实验室</p>
                 <p><strong>联系邮箱：</strong> lucien-6@qq.com</p>
-                <p><strong>版本：</strong> 1.2.1 (2025年04月)</p>
+                <p><strong>版本：</strong> 2.0.0 (2026-11-04)</p>
                 <p><strong>项目说明：</strong> 本项目旨在模拟胶囊形细菌的三维结构及其在显微镜下的成像效果，为微生物学研究提供可视化分析工具。</p>
-                <p style="margin-top: 10px; font-style: italic; color: #666;">© 2025 版权所有，保留所有权利。未经许可，禁止商业用途。</p>
+                <p style="margin-top: 10px; font-style: italic; color: #666;">© 2025–2026 版权所有，保留所有权利。未经许可，禁止商业用途。</p>
+            </div>
+        </div>
+
+        <div class="help-content lang-en">
+            <h3>Basic Operations</h3>
+            <ul>
+                <li><strong>Zoom:</strong> Use the mouse wheel to zoom the model view in or out.</li>
+                <li><strong>Rotate:</strong> Adjust the pose with the rotation sliders in the control panel. The three angles are XYZ Euler angles (degrees), the same convention used by batch simulation and the exported files, so entering an exported angle reproduces that pose.</li>
+                <li><strong>Reset:</strong> Click "Reset pose" to return the model to its initial orientation.</li>
+                <li><strong>Language:</strong> Use the language button at the top to switch between 中文 and English. The choice is remembered; exported Excel/JSON files, charts and images use the current language as well.</li>
+            </ul>
+
+            <h3>Model Parameters</h3>
+            <ul>
+                <li><strong>Cell Size:</strong>
+                    <ul>
+                        <li>Height: overall length of the capsule.</li>
+                        <li>Radius: radius of the two hemispherical caps (height &ge; 2 &times; radius is required; the two controls limit each other automatically).</li>
+                    </ul>
+                </li>
+                <li><strong>Depth of Field:</strong>
+                    <ul>
+                        <li>DoF range: size of the depth of field of the simulated microscope.</li>
+                        <li>Focus distance: position of the focal plane relative to the model center.</li>
+                        <li>Side view: click "Show DoF side view" to see where the DoF planes lie.</li>
+                    </ul>
+                </li>
+                <li><strong>Pili Control:</strong>
+                    <ul>
+                        <li>Pili count: total number of pili on the cell surface.</li>
+                        <li>Attachment split: by default "Fixed share" with 55% on the cylinder and 45% on the two hemispheres (experimental observation); change it with "Cylinder share", or choose "Area-proportional" to split by the surface areas of the cylinder and the hemispheres.</li>
+                        <li>Mean length: mean pilus length.</li>
+                        <li>Concentration: the shape parameter k of the Gamma(k, &theta;) length distribution (it only controls how spread out the pilus lengths are, not the shape of a pilus); the scale is &theta; = mean length / k, so the mean equals the chosen mean length. A larger k gives more concentrated lengths.</li>
+                        <li>Regenerate: click "Regenerate pili" to regenerate the pili with the current parameters.</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <h3>Views</h3>
+            <ul>
+                <li><strong>Main view:</strong> the 3D capsule bacterium; zoom with the mouse wheel.</li>
+                <li><strong>Projection view:</strong> the capsule projection seen from the current viewpoint, simulating the microscope image.</li>
+                <li><strong>Fluorescence view:</strong> fluorescence appearance of the inside and protruding pilus segments.
+                    <ul>
+                        <li>Yellow: inside segment overlapping the capsule.</li>
+                        <li>Green: segment protruding from the capsule.</li>
+                        <li>Red: segment outside the depth of field (not sharply imaged by the microscope).</li>
+                    </ul>
+                </li>
+                <li><strong>DoF side view:</strong> the DoF planes together with a side view of the capsule.
+                    <ul>
+                        <li>Blue dashed line: near DoF plane.</li>
+                        <li>Red dashed line: far DoF plane.</li>
+                    </ul>
+                </li>
+                <li><strong>True pilus length distribution:</strong> histogram of the true pilus lengths.</li>
+                <li><strong>Projected pilus length distribution:</strong> distribution of the protruding projected lengths in the projection view, with mean, standard deviation and other statistics.</li>
+            </ul>
+
+            <h3>Function Buttons</h3>
+            <ul>
+                <li><strong>Export:</strong> export the data of the current model.
+                    <ul>
+                        <li>Choose among model parameters, true pilus lengths and projected lengths.</li>
+                        <li>JSON and Excel are supported; lengths and statistics in Excel are numeric cells, ready for summing and plotting.</li>
+                        <li>Model parameters include the attachment split mode, the cylinder share and the rotation angles (XYZ Euler angles, degrees).</li>
+                    </ul>
+                </li>
+                <li><strong>Batch Simulation:</strong> run many simulations and collect the data.
+                    <ul>
+                        <li>Set the number of models and the number of poses per model; the current size, pili and attachment settings are used.</li>
+                        <li>Several models are generated automatically and analysed in different poses; every pose is a uniformly random (isotropic) orientation in space.</li>
+                        <li>True lengths are recorded once per model; the observation sheet pairs each pilus (by index) with its projected length in that pose.</li>
+                        <li>Suited to obtaining statistically meaningful projected-length distributions.</li>
+                        <li>The rotation angles of every pose are written to Excel (the pose-angle sheet); entering them in the rotation controls reproduces that pose exactly. The notes sheet documents all conventions.</li>
+                        <li>The control panel is locked during a run; click "Stop" at any time to cancel; parameters are restored afterwards. The views are only previewed at a low rate while running, in exchange for faster analysis.</li>
+                    </ul>
+                </li>
+                <li><strong>Help:</strong> show this help.</li>
+                <li><strong>Language:</strong> switch the interface language between 中文 and English.</li>
+            </ul>
+
+            <h3>Analysis Tools</h3>
+            <ul>
+                <li><strong>Projection analysis image:</strong> use the button below the fluorescence view to show/hide the projection analysis image, which shows the intersections of pili with the cell outline.</li>
+                <li><strong>Statistics:</strong> below the projected length chart you find the number of visible pili, mean length, standard deviation, etc. for the current viewpoint. A pilus is visible if its projected length protruding from the outline, inside the depth of field, is &ge; 0.8 (in model length units).</li>
+            </ul>
+
+            <h3>Tips</h3>
+            <ul>
+                <li>Adjust the DoF range and focus distance to simulate focusing in a microscope.</li>
+                <li>The larger the concentration, the more concentrated the pilus lengths; the smaller, the more spread out. Lengths are drawn from the standard Gamma(k, &theta;) distribution.</li>
+                <li>Rotate the model to see how the projection of the pili changes with the viewing angle.</li>
+                <li>Batch simulation is suited to collecting large data sets for statistics.</li>
+                <li>The attachment split defaults to the observed 55% / 45%; to compare the two hypotheses, switch to "Area-proportional" and run the batch again.</li>
+                <li>Changing the attachment split, pili count or size regenerates the pili automatically; after changing mean length or concentration, click "Regenerate pili".</li>
+            </ul>
+
+            <h3>About</h3>
+            <div style="border-top: 1px solid #eee; padding-top: 10px; margin-top: 15px;">
+                <p><strong>Developer:</strong> Lucien</p>
+                <p><strong>Affiliation:</strong> Soft Matter and Microbial Technology Laboratory, University of Electronic Science and Technology of China</p>
+                <p><strong>Contact:</strong> lucien-6@qq.com</p>
+                <p><strong>Version:</strong> 2.0.0 (2026-11-04)</p>
+                <p><strong>About the project:</strong> This project simulates the three-dimensional structure of capsule-shaped bacteria and their appearance under a microscope, providing a visual analysis tool for microbiology research.</p>
+                <p style="margin-top: 10px; font-style: italic; color: #666;">&copy; 2025&ndash;2026 All rights reserved. Commercial use is prohibited without permission.</p>
             </div>
         </div>
     </div>
-    
-    <!-- 导出对话框 -->
+
+    <!-- Export dialog -->
     <div id="exportDialog">
-        <h3>导出选项</h3>
+        <h3 data-i18n="export.title">导出选项</h3>
         <div class="export-options">
             <div class="export-option">
                 <input type="checkbox" id="exportModelParams" checked>
-                <label for="exportModelParams">模型参数</label>
+                <label for="exportModelParams" data-i18n="export.modelParams">模型参数</label>
             </div>
             <div class="export-option">
                 <input type="checkbox" id="exportHairLengths" checked>
-                <label for="exportHairLengths">菌毛真实长度数据</label>
+                <label for="exportHairLengths" data-i18n="export.trueLengths">菌毛真实长度数据</label>
             </div>
             <div class="export-option">
                 <input type="checkbox" id="exportProjectionData" checked>
-                <label for="exportProjectionData">菌毛投影长度数据</label>
+                <label for="exportProjectionData" data-i18n="export.projLengths">菌毛投影长度数据</label>
             </div>
-    
-            <!-- 添加格式选择 -->
+
+            <!-- Format selection -->
             <div style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 10px;">
-                <p style="margin-bottom: 8px; font-weight: bold;">导出格式:</p>
+                <p style="margin-bottom: 8px; font-weight: bold;" data-i18n="export.format">导出格式:</p>
                 <div class="export-option">
                     <input type="radio" id="formatJSON" name="exportFormat" value="json" checked>
                     <label for="formatJSON">JSON</label>
@@ -602,17 +757,21 @@
             </div>
         </div>
         <div class="export-dialog-buttons">
-            <button id="cancelExport">取消</button>
-            <button id="confirmExport">导出</button>
+            <button id="cancelExport" data-i18n="btn.cancel">取消</button>
+            <button id="confirmExport" data-i18n="btn.export">导出</button>
         </div>
     </div>
 
-    <!-- 在其他脚本引用之前添加SheetJS库 -->
+    <!-- UI strings first: the static markup is translated before the (slower) CDN libraries load -->
+    <script src="pili-sim-i18n.js"></script>
+
+    <!-- Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
-    <script src="capsule.js"></script>
+    <!-- Application script (classic script so the page also works when opened by double-click) -->
+    <script src="pili-sim.js"></script>
 </body>
 
 </html>

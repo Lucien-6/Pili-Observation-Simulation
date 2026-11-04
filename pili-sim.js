@@ -97,6 +97,48 @@ let focusDistance = 0.0; // 焦点距离
 let depthPlanes = null;  // 用于可视化景深平面的对象
 let showDepthPlanes = true; // 是否显示景深平面
 
+// ================ Performance helpers ================
+// Shared materials: the per-update views used to allocate fresh materials on every refresh.
+const SILHOUETTE_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+const PROJECTION_BODY_MATERIAL = new THREE.MeshBasicMaterial({ color: 0x156289, side: THREE.DoubleSide });
+const PROJECTION_HAIR_MATERIAL = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 1.5 });
+const FLUORESCENCE_BODY_MATERIAL = new THREE.MeshBasicMaterial({
+    color: 0xa8e0a8, side: THREE.DoubleSide, transparent: false, opacity: 1.0
+});
+const FLUORESCENCE_INSIDE_MATERIAL = new THREE.LineBasicMaterial({
+    color: 0xffcc00, linewidth: 2, opacity: 0.8, transparent: true
+});
+const FLUORESCENCE_OUTSIDE_MATERIAL = new THREE.LineBasicMaterial({
+    color: 0x00ff00, linewidth: 2.5, opacity: 0.8, transparent: true
+});
+const FLUORESCENCE_OUT_OF_DEPTH_MATERIAL = new THREE.LineBasicMaterial({
+    color: 0xff0000, linewidth: 2.5, opacity: 1.0, transparent: false
+});
+
+// Reusable buffers for the 512x512 silhouette analysis
+const SILHOUETTE_SIZE = 512;
+const silhouettePixelBuffer = new Uint8Array(SILHOUETTE_SIZE * SILHOUETTE_SIZE * 4);
+const silhouetteMap = new Uint8Array(SILHOUETTE_SIZE * SILHOUETTE_SIZE);  // row-major, 1 = capsule body
+let silhouetteScene = null;
+
+// While true (batch simulation) updateProjectionView() runs the analysis only: no view rendering, charts or debug drawing
+let batchFastMode = false;
+// The main view is rendered only when something changed (not every animation frame)
+let mainViewDirty = true;
+
+// Release GPU buffers and materials owned by an object tree that is being discarded
+function disposeObject3D(root) {
+    root.traverse((node) => {
+        if (node.geometry) {
+            node.geometry.dispose();
+        }
+        if (node.material) {
+            const materials = Array.isArray(node.material) ? node.material : [node.material];
+            materials.forEach((material) => material.dispose());
+        }
+    });
+}
+
 // ================ 工具函数 ================
 // 计算两点之间的距离
 function distance(p1, p2) {
@@ -105,6 +147,12 @@ function distance(p1, p2) {
         Math.pow(p1.y - p2.y, 2) +
         Math.pow(p1.z - p2.z, 2)
     );
+}
+
+// Round to fixed decimals but keep a number type
+// (toFixed returns a string, which Excel would store as text instead of a number)
+function roundTo(value, digits) {
+    return Number(Number(value).toFixed(digits));
 }
 
 // Standard normal via Box-Muller
@@ -161,11 +209,67 @@ function generateGammaDistributedLength(meanLength, shape) {
 }
 
 // 生成胶囊表面的随机点
-function getRandomPointOnCapsule(radius, height) {
-    const cylinderHeight = height - 2 * radius;
+// Default share of attachment points on the cylindrical part (percent), from experimental observation.
+// The remaining 45% sit on the two hemispherical caps.
+const DEFAULT_CYLINDER_SHARE_PERCENT = 55;
 
-    // 按照5.5:4的比例决定在圆柱体还是半球上生成点，而不是按表面积比例
-    const onCylinder = Math.random() < 0.55; // 60%的点在圆柱体上
+// Fraction of the surface area that belongs to the cylindrical part
+function getCylinderAreaFraction(radius, height) {
+    const cylinderHeight = Math.max(0, height - 2 * radius);
+    const cylinderArea = 2 * Math.PI * radius * cylinderHeight;
+    const capsArea = 4 * Math.PI * radius * radius;
+    return cylinderArea / (cylinderArea + capsArea);
+}
+
+// Probability that an attachment point lies on the cylinder.
+// mode 'fixed': user-defined share (percent); mode 'area': proportional to surface area.
+// A capsule without a cylindrical part (height = 2r) has everything on the caps.
+function computeCylinderFraction(radius, height, mode, sharePercent) {
+    if (height - 2 * radius <= 1e-9) {
+        return 0;
+    }
+    if (mode === 'area') {
+        return getCylinderAreaFraction(radius, height);
+    }
+    const share = Number.isFinite(sharePercent) ? sharePercent : DEFAULT_CYLINDER_SHARE_PERCENT;
+    return Math.max(0, Math.min(100, share)) / 100;
+}
+
+// Minimum spacing between attachment points, from the point density of the most crowded region.
+// With area-proportional allocation both regions have the same density (same as one global estimate);
+// with a fixed share the hemispheres can be denser than the cylinder, so each region is checked separately.
+// 0.8 is an empirical packing factor.
+function computeMinDistance(radius, height, count, cylinderFraction) {
+    if (count <= 0) {
+        return Infinity;
+    }
+    const cylinderHeight = Math.max(0, height - 2 * radius);
+    const cylinderArea = 2 * Math.PI * radius * cylinderHeight;
+    const capsArea = 4 * Math.PI * radius * radius;
+
+    const areaPerPoint = [];
+    if (cylinderFraction > 0 && cylinderArea > 0) {
+        areaPerPoint.push(cylinderArea / (count * cylinderFraction));
+    }
+    if (cylinderFraction < 1) {
+        areaPerPoint.push(capsArea / (count * (1 - cylinderFraction)));
+    }
+    return Math.sqrt(Math.min(...areaPerPoint) / Math.PI) * 0.8;
+}
+
+// region: 'cylinder' | 'caps' | undefined (undefined = random, proportional to surface area)
+function getRandomPointOnCapsule(radius, height, region) {
+    // Cylinder length; clamped so that height < 2r degrades to a sphere instead of a negative length
+    const cylinderHeight = Math.max(0, height - 2 * radius);
+
+    let onCylinder;
+    if (region === 'cylinder') {
+        onCylinder = cylinderHeight > 0;
+    } else if (region === 'caps') {
+        onCylinder = false;
+    } else {
+        onCylinder = Math.random() < getCylinderAreaFraction(radius, height);
+    }
     let point = new THREE.Vector3();
     let normal = new THREE.Vector3();
 
@@ -185,7 +289,8 @@ function getRandomPointOnCapsule(radius, height) {
         const u = Math.random();
         const v = Math.random();
         const theta = 2 * Math.PI * u;
-        const phi = Math.acos(2 * v - 1) / 2;
+        // Area-uniform on a hemisphere: cos(phi) is uniform on [0, 1]
+        const phi = Math.acos(v);
 
         const sinPhi = Math.sin(phi);
         const x = radius * sinPhi * Math.cos(theta);
@@ -200,55 +305,61 @@ function getRandomPointOnCapsule(radius, height) {
 }
 
 // 使用泊松圆盘采样生成均匀分布的点
-function generatePoissonPoints(radius, height, count, minDistance) {
+// cylinderFraction: expected share of points on the cylinder (0-1); undefined = proportional to surface area.
+// The number of points per region is drawn as a quota (stochastic rounding, so the expected share is exact),
+// then each point is placed by dart throwing inside its region with a minimum spacing.
+function generatePoissonPoints(radius, height, count, minDistance, cylinderFraction) {
     const points = [];
-    const attempts = 30; // 每个点的最大尝试次数
-    const activePoints = [];
+    const maxTries = 200; // candidates tried per point
 
-    // 生成第一个点
-    if (count > 0) {
-        const firstPoint = getRandomPointOnCapsule(radius, height);
-        points.push(firstPoint);
-        activePoints.push(firstPoint);
+    // Per-region quotas
+    const fraction = (cylinderFraction === undefined)
+        ? computeCylinderFraction(radius, height, 'area')
+        : cylinderFraction;
+    const expectedCylinder = count * fraction;
+    let cylinderCount = Math.floor(expectedCylinder);
+    if (Math.random() < expectedCylinder - cylinderCount) {
+        cylinderCount += 1;
+    }
+    const regions = [];
+    for (let i = 0; i < count; i++) {
+        regions.push(i < cylinderCount ? 'cylinder' : 'caps');
+    }
+    // Shuffle so that hair indices are not ordered by region (Fisher-Yates)
+    for (let i = regions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [regions[i], regions[j]] = [regions[j], regions[i]];
     }
 
-    // 尝试生成剩余的点
-    while (activePoints.length > 0 && points.length < count) {
-        // 随机选择一个活动点
-        const randomIndex = Math.floor(Math.random() * activePoints.length);
-        const currentPoint = activePoints[randomIndex];
-        let foundValidPoint = false;
+    for (let k = 0; k < count; k++) {
+        const region = regions[k];
+        let best = null;
+        let bestGap = -Infinity;
 
-        // 尝试在当前点周围生成新点
-        for (let i = 0; i < attempts; i++) {
-            const newPoint = getRandomPointOnCapsule(radius, height);
+        for (let t = 0; t < maxTries; t++) {
+            const candidate = getRandomPointOnCapsule(radius, height, region);
 
-            // 检查新点是否与现有点保持最小距离
-            let isValid = true;
+            // Distance to the nearest existing point
+            let gap = Infinity;
             for (let j = 0; j < points.length; j++) {
-                if (distance(newPoint.point, points[j].point) < minDistance) {
-                    isValid = false;
-                    break;
+                const d = distance(candidate.point, points[j].point);
+                if (d < gap) {
+                    gap = d;
                 }
             }
 
-            if (isValid) {
-                points.push(newPoint);
-                activePoints.push(newPoint);
-                foundValidPoint = true;
+            if (gap >= minDistance) {
+                best = candidate;
                 break;
+            }
+            // Region too crowded for the requested spacing: remember the roomiest candidate
+            if (gap > bestGap) {
+                bestGap = gap;
+                best = candidate;
             }
         }
 
-        // 如果无法在当前点周围找到有效点，则从活动列表中移除
-        if (!foundValidPoint) {
-            activePoints.splice(randomIndex, 1);
-        }
-    }
-
-    // 如果无法生成足够的点，使用随机点填充
-    while (points.length < count) {
-        points.push(getRandomPointOnCapsule(radius, height));
+        points.push(best);
     }
 
     return points;
@@ -269,7 +380,7 @@ function initCharts() {
             data: {
                 labels: [],
                 datasets: [{
-                    label: '菌毛长度分布',
+                    label: tr('chart.trueLength.label'),
                     data: [],
                     backgroundColor: 'rgba(54, 162, 235, 0.5)',
                     borderColor: 'rgba(54, 162, 235, 1)',
@@ -277,6 +388,7 @@ function initCharts() {
                 }]
             },
             options: {
+                animation: false,           // no 1 s redraw animation on every refresh
                 responsive: true,
                 maintainAspectRatio: true,  // 保持宽高比
                 aspectRatio: 2,             // 设置宽高比为2:1
@@ -289,13 +401,13 @@ function initCharts() {
                     x: {
                         title: {
                             display: true,
-                            text: '长度'
+                            text: tr('chart.axis.length')
                         }
                     },
                     y: {
                         title: {
                             display: true,
-                            text: '频率'
+                            text: tr('chart.axis.frequency')
                         },
                         beginAtZero: true
                     }
@@ -304,7 +416,7 @@ function initCharts() {
                     tooltip: {
                         callbacks: {
                             label: function (context) {
-                                return `频率: ${context.parsed.y}`;
+                                return tr('chart.tooltip.frequency', { value: context.parsed.y });
                             }
                         }
                     },
@@ -316,7 +428,7 @@ function initCharts() {
         });
         hairLengthHistChart.attached = true;  // 添加attached属性
     } else {
-        console.error('未找到毛发长度图表容器');
+        console.error('True length chart container not found');
     }
 
     // 投影菌毛长度直方图
@@ -327,7 +439,7 @@ function initCharts() {
             data: {
                 labels: [],
                 datasets: [{
-                    label: '投影菌毛外伸长度分布',
+                    label: tr('chart.projLength.label'),
                     data: [],
                     backgroundColor: 'rgba(75, 192, 192, 0.5)',
                     borderColor: 'rgba(75, 192, 192, 1)',
@@ -335,19 +447,20 @@ function initCharts() {
                 }]
             },
             options: {
+                animation: false,
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
                     x: {
                         title: {
                             display: true,
-                            text: '长度'
+                            text: tr('chart.axis.length')
                         }
                     },
                     y: {
                         title: {
                             display: true,
-                            text: '频率'
+                            text: tr('chart.axis.frequency')
                         },
                         beginAtZero: true
                     }
@@ -356,7 +469,7 @@ function initCharts() {
                     tooltip: {
                         callbacks: {
                             label: function (context) {
-                                return `频率: ${(context.parsed.y * 100).toFixed(1)}%`;
+                                return tr('chart.tooltip.frequency', { value: `${(context.parsed.y * 100).toFixed(1)}%` });
                             }
                         }
                     },
@@ -368,21 +481,37 @@ function initCharts() {
         });
         projectionHairLengthChart.attached = true;
     } else {
-        console.error('未找到投影菌毛长度图表容器');
+        console.error('Projected length chart container not found');
     }
+}
+
+// Re-apply the current language to the chart texts (tooltips already read it lazily)
+function applyChartLanguage() {
+    [
+        [hairLengthHistChart, 'chart.trueLength.label'],
+        [projectionHairLengthChart, 'chart.projLength.label']
+    ].forEach(([chart, labelKey]) => {
+        if (!chart) {
+            return;
+        }
+        chart.data.datasets[0].label = tr(labelKey);
+        chart.options.scales.x.title.text = tr('chart.axis.length');
+        chart.options.scales.y.title.text = tr('chart.axis.frequency');
+        chart.update('none');
+    });
 }
 
 // 更新毛发长度直方图
 function updateHairLengthHistogram(hairLengths) {
     if (!hairLengthHistChart) {
-        console.error('毛发长度图表未初始化');
+        console.error('True length chart is not initialised');
         return;
     }
 
     if (hairLengths.length === 0) {
         hairLengthHistChart.data.labels = [];
         hairLengthHistChart.data.datasets[0].data = [];
-        hairLengthHistChart.update();
+        hairLengthHistChart.update('none');
         return;
     }
 
@@ -415,17 +544,17 @@ function updateHairLengthHistogram(hairLengths) {
     // 更新图表数据
     hairLengthHistChart.data.labels = binLabels;
     hairLengthHistChart.data.datasets[0].data = normalizedBins;
-    hairLengthHistChart.options.scales.y.title.text = '频率';
+    hairLengthHistChart.options.scales.y.title.text = tr('chart.axis.frequency');
     hairLengthHistChart.options.plugins.tooltip.callbacks.label = function (context) {
-        return `频率: ${(context.parsed.y * 100).toFixed(1)}%`;
+        return tr('chart.tooltip.frequency', { value: `${(context.parsed.y * 100).toFixed(1)}%` });
     };
-    hairLengthHistChart.update();
+    hairLengthHistChart.update('none');
 }
 
 // 更新投影菌毛长度直方图
 function updateProjectionHairLengthHistogram(hairLengths) {
     if (!projectionHairLengthChart) {
-        console.error('投影菌毛长度图表未初始化');
+        console.error('Projected length chart is not initialised');
         return;
     }
 
@@ -433,13 +562,12 @@ function updateProjectionHairLengthHistogram(hairLengths) {
         // 如果没有数据，清空图表
         projectionHairLengthChart.data.labels = [];
         projectionHairLengthChart.data.datasets[0].data = [];
-        projectionHairLengthChart.update();
+        projectionHairLengthChart.update('none');
 
         // 更新统计信息
         const statsInfoElement = document.getElementById('projectionStatsInfo');
         if (statsInfoElement) {
-            statsInfoElement.innerHTML =
-                `<strong>投影菌毛统计:</strong> 没有符合条件的菌毛外伸出胶囊投影区域（忽略长度&lt;${VISIBLE_PROJECTION_LENGTH_THRESHOLD}）`;
+            statsInfoElement.innerHTML = tr('stats.none', { threshold: VISIBLE_PROJECTION_LENGTH_THRESHOLD });
         }
         return;
     }
@@ -473,7 +601,7 @@ function updateProjectionHairLengthHistogram(hairLengths) {
     // 更新图表数据
     projectionHairLengthChart.data.labels = binLabels;
     projectionHairLengthChart.data.datasets[0].data = normalizedBins;
-    projectionHairLengthChart.update();
+    projectionHairLengthChart.update('none');
 
     // 计算平均长度和标准差
     const avgLength = hairLengths.reduce((sum, len) => sum + len, 0) / totalCount;
@@ -484,7 +612,7 @@ function updateProjectionHairLengthHistogram(hairLengths) {
     const statsInfoElement = document.getElementById('projectionStatsInfo');
     if (statsInfoElement) {
         statsInfoElement.innerHTML =
-            `<strong>统计结果:</strong> 共有 ${totalCount} 根菌毛可见(≥${VISIBLE_PROJECTION_LENGTH_THRESHOLD}) | ` +
+            tr('stats.result', { count: totalCount, threshold: VISIBLE_PROJECTION_LENGTH_THRESHOLD }) +
             `Mean: ${avgLength.toFixed(2)} | ` +
             `STD: ${stdDev.toFixed(2)} | ` +
             `Min: ${min.toFixed(2)}, Max: ${max.toFixed(2)}`;
@@ -496,11 +624,12 @@ function createDepthPlanes() {
     // 如果已经存在景深平面，先移除
     if (depthPlanes) {
         sideViewScene.remove(depthPlanes);
+        disposeObject3D(depthPlanes);
     }
 
     // 创建一个组来包含所有景深相关的对象
     depthPlanes = new THREE.Group();
-    depthPlanes.userData = {};
+    depthPlanes.userData = { ownsResources: true };
 
     // 计算景深的前后边界
     const nearZ = focusDistance - depthOfField / 2;
@@ -520,14 +649,12 @@ function createDepthPlanes() {
 function createDashedLine(zPosition, color) {
     // 创建点划线几何体
     const lineGeometry = new THREE.BufferGeometry();
-    const linePoints = [];
 
-    // 创建一条垂直线，高度为6
-    for (let y = -3; y <= 3; y += 0.01) {
-        linePoints.push(new THREE.Vector3(0, y, zPosition));
-    }
-
-    lineGeometry.setFromPoints(linePoints);
+    // A vertical line of height 6; two end points are enough, the dash pattern follows the line distance
+    lineGeometry.setFromPoints([
+        new THREE.Vector3(0, -3, zPosition),
+        new THREE.Vector3(0, 3, zPosition)
+    ]);
 
     // 创建点划线材质，增加线宽和对比度
     const lineMaterial = new THREE.LineDashedMaterial({
@@ -590,6 +717,10 @@ function updateSideView() {
     while (sideViewScene.children.length > 0) {
         const obj = sideViewScene.children[0];
         sideViewScene.remove(obj);
+        // Release only what the side view owns; the capsule clone shares geometry/materials with the live capsule
+        if (obj.userData && obj.userData.ownsResources) {
+            disposeObject3D(obj);
+        }
     }
 
     // 添加光源
@@ -616,6 +747,7 @@ function updateSideView() {
     const centerGeometry = new THREE.SphereGeometry(0.05, 16, 16);
     const centerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
     const centerSphere = new THREE.Mesh(centerGeometry, centerMaterial);
+    centerSphere.userData.ownsResources = true;
     sideViewScene.add(centerSphere);
 
     // 渲染侧面视图
@@ -661,7 +793,7 @@ function updateDashedLine(line, zPosition) {
 // ================ 主要功能函数 ================
 // 创建胶囊几何体
 function createCapsule(radius, height, segments) {
-    const cylinderHeight = height - 2 * radius;
+    const cylinderHeight = Math.max(0, height - 2 * radius);
     const cylinderGeometry = new THREE.CylinderGeometry(radius, radius, cylinderHeight, segments, 1);
     const cylinder = new THREE.Mesh(
         cylinderGeometry,
@@ -704,9 +836,10 @@ function randomizeNormalDirection(normal) {
     // 创建垂直于法线和第一个向量的第二个向量
     const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
     
-    // 随机角度，最大30度（PI/6弧度）
+    // Uniform over the solid angle of a 30-degree cone: cos(theta) is uniform on [cos(30deg), 1]
     const maxAngle = Math.PI / 6;
-    const theta = Math.random() * maxAngle; // 方位角范围[0, 30度]
+    const cosMax = Math.cos(maxAngle);
+    const theta = Math.acos(cosMax + (1 - cosMax) * Math.random());
     const phi = Math.random() * Math.PI * 2; // 水平角范围[0, 360度]
     
     // 基于球坐标系计算偏移向量
@@ -754,7 +887,9 @@ function createHair(point, normal, length, hairIndex = 0) {
 function updateCapsule() {
     // 清除现有的胶囊和菌毛
     while (capsule.children.length > 0) {
-        capsule.remove(capsule.children[0]);
+        const oldChild = capsule.children[0];
+        capsule.remove(oldChild);
+        disposeObject3D(oldChild);
     }
 
     const height = parseFloat(document.getElementById('heightValue').value);
@@ -766,16 +901,18 @@ function updateCapsule() {
     // 保存当前四元数旋转
     const currentQuaternion = capsule.quaternion.clone();
     scene.remove(capsule);
+    disposeObject3D(capsule);
 
     capsule = createCapsule(radius, height, 32);
 
-    // 计算适当的最小距离 - 基于胶囊表面积和毛发数量
-    const cylinderHeight = height - 2 * radius;
-    const totalSurfaceArea = 2 * Math.PI * radius * cylinderHeight + 4 * Math.PI * radius * radius;
-    const minDistance = Math.sqrt(totalSurfaceArea / (hairCount * Math.PI)) * 0.8; // 0.8是调整系数
-
-    // 使用泊松分布生成毛发固着点
-    const hairPoints = generatePoissonPoints(radius, height, hairCount, minDistance);
+    // Attachment points: cylinder/hemisphere split follows the UI setting (fixed share or area-proportional)
+    const anchorSettings = readAnchorSettings();
+    const cylinderFraction = computeCylinderFraction(
+        radius, height, anchorSettings.anchorMode, anchorSettings.cylinderShare
+    );
+    const minDistance = computeMinDistance(radius, height, hairCount, cylinderFraction);
+    const hairPoints = generatePoissonPoints(radius, height, hairCount, minDistance, cylinderFraction);
+    updateAnchorRatioText(radius, height);
 
     // 清空当前毛发长度数组
     currentHairLengths = [];
@@ -795,12 +932,17 @@ function updateCapsule() {
     capsule.quaternion.copy(currentQuaternion);
     scene.add(capsule);
 
-    // 更新直方图
-    updateHairLengthHistogram(currentHairLengths);
+    mainViewDirty = true;
 
-    // 更新侧面视图，如果它存在
-    if (sideViewVisible) {
-        updateSideView();
+    // Batch fast mode: skip the UI-only updates (they are refreshed by the periodic preview and at the end)
+    if (!batchFastMode) {
+        // 更新直方图
+        updateHairLengthHistogram(currentHairLengths);
+
+        // 更新侧面视图，如果它存在
+        if (sideViewVisible) {
+            updateSideView();
+        }
     }
 
     // 更新投影视图
@@ -808,17 +950,40 @@ function updateCapsule() {
 }
 
 // 更新投影视图
-function updateProjectionView() {
-    // 清空投影场景
-    while (projectionScene.children.length > 0) {
-        projectionScene.remove(projectionScene.children[0]);
+// Remember the camera/pose that the projection views were last computed for,
+// so the animation loop does not repeat an update that was just done explicitly.
+function syncViewChangeCache() {
+    if (!camera.userData.lastPosition) {
+        camera.userData.lastPosition = new THREE.Vector3();
+        camera.userData.lastQuaternion = new THREE.Quaternion();
+        camera.userData.lastCapsuleQuaternion = new THREE.Quaternion();
     }
+    camera.userData.lastPosition.copy(camera.position);
+    camera.userData.lastQuaternion.copy(camera.quaternion);
+    camera.userData.lastCapsuleQuaternion.copy(capsule.quaternion);
+}
 
-    // 重新添加光源
-    const projectionLight = new THREE.DirectionalLight(0xffffff, 2);
-    projectionLight.position.copy(camera.position);
-    projectionScene.add(projectionLight);
-    projectionScene.add(new THREE.AmbientLight(0x404040, 0.5));
+function isProjectionViewStale() {
+    return !camera.userData.lastPosition ||
+        !camera.position.equals(camera.userData.lastPosition) ||
+        !camera.quaternion.equals(camera.userData.lastQuaternion) ||
+        !capsule.quaternion.equals(camera.userData.lastCapsuleQuaternion);
+}
+
+// Update only if the views do not already reflect the current camera/pose
+function updateProjectionViewIfStale() {
+    if (isProjectionViewStale()) {
+        updateProjectionView();
+    }
+}
+
+let projectionViewLight = null;
+let projectionViewAmbient = null;
+let projectionCapsuleInScene = null;
+
+// options.forceFull: render all views even while batch fast mode is active
+function updateProjectionView(options) {
+    const analysisOnly = batchFastMode && !(options && options.forceFull);
 
     // 创建投影胶囊的副本
     const projectionCapsule = capsule.clone();
@@ -829,34 +994,22 @@ function updateProjectionView() {
     projectionHairLengths = [];
     currentHairObservations = [];
 
-    // 创建一个用于检测胶囊体的材质
-    const capsuleMaterial = new THREE.MeshBasicMaterial({
-        color: 0x156289, // 深蓝色
-        side: THREE.DoubleSide
-    });
-
     // 创建一个组来存放胶囊体部分（不包括菌毛）
     const capsuleBody = new THREE.Group();
     // 确保胶囊体的旋转与主胶囊一致
     capsuleBody.rotation.copy(projectionCapsule.rotation);
 
-    // 遍历投影胶囊的所有子对象
+    // 遍历投影胶囊的所有子对象（共享材质，避免每次刷新都创建新材质）
     projectionCapsule.traverse((child) => {
         if (child instanceof THREE.Mesh) {
             // 将胶囊体设置为深蓝色的基础材质
-            child.material = capsuleMaterial.clone();
+            child.material = PROJECTION_BODY_MATERIAL;
             capsuleBody.add(child.clone());  // 添加到胶囊体组
         } else if (child instanceof THREE.Line) {
             // 将毛发设置为亮绿色
-            child.material = new THREE.LineBasicMaterial({
-                color: 0x00ff00,
-                linewidth: 1.5
-            });
+            child.material = PROJECTION_HAIR_MATERIAL;
         }
     });
-
-    // 添加胶囊体到场景
-    projectionScene.add(projectionCapsule);
 
     // 使投影相机与主相机保持一致的朝向
     projectionCamera.position.copy(camera.position);
@@ -881,11 +1034,36 @@ function updateProjectionView() {
 
     projectionCamera.updateProjectionMatrix();
 
+    if (analysisOnly) {
+        // Same transforms the renderer would have computed, without rendering any view
+        projectionCapsule.updateMatrixWorld(true);
+        projectionCamera.updateMatrixWorld(true);
+        analyzeFluorescenceHairs(projectionCapsule, capsuleBody, { skipDebug: true });
+        return;
+    }
+
+    // Persistent lights; only the capsule copy is swapped on every refresh
+    if (!projectionViewLight) {
+        while (projectionScene.children.length > 0) {
+            projectionScene.remove(projectionScene.children[0]);
+        }
+        projectionViewLight = new THREE.DirectionalLight(0xffffff, 2);
+        projectionViewAmbient = new THREE.AmbientLight(0x404040, 0.5);
+        projectionScene.add(projectionViewLight);
+        projectionScene.add(projectionViewAmbient);
+    }
+    projectionViewLight.position.copy(camera.position);
+    if (projectionCapsuleInScene) {
+        projectionScene.remove(projectionCapsuleInScene);
+    }
+    projectionScene.add(projectionCapsule);
+    projectionCapsuleInScene = projectionCapsule;
+
     try {
         // 渲染投影场景
         projectionRenderer.render(projectionScene, projectionCamera);
     } catch (error) {
-        console.error('投影视图渲染错误:', error);
+        console.error('Projection view render error:', error);
         projectionRenderer.render(projectionScene, projectionCamera);
     }
 
@@ -894,12 +1072,14 @@ function updateProjectionView() {
         // 传递投影相机和胶囊的完整信息，确保荧光视图与投影视图保持一致
         updateFluorescenceView(projectionCapsule, capsuleBody, projectionCamera);
     } catch (error) {
-        console.error('荧光视图渲染错误:', error);
+        console.error('Fluorescence view render error:', error);
         // 尝试简单渲染荧光场景，不进行复杂分析
         const simpleScene = new THREE.Scene();
         simpleScene.background = new THREE.Color(0x111111);
         fluorescenceRenderer.render(simpleScene, projectionCamera);
     }
+
+    syncViewChangeCache();
 }
 
 // 修改 updateFluorescenceView 函数，添加错误处理
@@ -923,12 +1103,7 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
     capsuleBody.traverse((child) => {
         if (child instanceof THREE.Mesh) {
             const mesh = child.clone();
-            mesh.material = new THREE.MeshBasicMaterial({
-                color: 0xa8e0a8, // 浅绿色
-                side: THREE.DoubleSide,
-                transparent: false,
-                opacity: 1.0
-            });
+            mesh.material = FLUORESCENCE_BODY_MATERIAL;  // light green
             fluorescenceCapsuleBody.add(mesh);
         }
     });
@@ -954,13 +1129,7 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
             segment.inside.end.x, segment.inside.end.y, segment.inside.end.z
         ]);
         insideGeometry.setAttribute('position', new THREE.BufferAttribute(insidePositions, 3));
-        const insideMaterial = new THREE.LineBasicMaterial({
-            color: 0xffcc00, // 黄色
-            linewidth: 2,
-            opacity: 0.8,
-            transparent: true
-        });
-        const insideLine = new THREE.Line(insideGeometry, insideMaterial);
+        const insideLine = new THREE.Line(insideGeometry, FLUORESCENCE_INSIDE_MATERIAL);  // yellow
         hairLinesGroup.add(insideLine);
 
         // 添加外部段（外伸部分）- 亮绿色
@@ -970,13 +1139,7 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
             segment.outside.end.x, segment.outside.end.y, segment.outside.end.z
         ]);
         outsideGeometry.setAttribute('position', new THREE.BufferAttribute(outsidePositions, 3));
-        const outsideMaterial = new THREE.LineBasicMaterial({
-            color: 0x00ff00, // 亮绿色
-            linewidth: 2.5,
-            opacity: 0.8,
-            transparent: true
-        });
-        const outsideLine = new THREE.Line(outsideGeometry, outsideMaterial);
+        const outsideLine = new THREE.Line(outsideGeometry, FLUORESCENCE_OUTSIDE_MATERIAL);  // bright green
         hairLinesGroup.add(outsideLine);
 
         // 新增：添加景深范围外的菌毛部分（红色标记）
@@ -989,13 +1152,7 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
                     segment.depthInfo.start.x, segment.depthInfo.start.y, segment.depthInfo.start.z
                 ]);
                 outOfDepthStartGeometry.setAttribute('position', new THREE.BufferAttribute(outOfDepthStartPositions, 3));
-                const outOfDepthStartMaterial = new THREE.LineBasicMaterial({
-                    color: 0xff0000, // 红色
-                    linewidth: 2.5,
-                    opacity: 1.0,
-                    transparent: false
-                });
-                const outOfDepthStartLine = new THREE.Line(outOfDepthStartGeometry, outOfDepthStartMaterial);
+                const outOfDepthStartLine = new THREE.Line(outOfDepthStartGeometry, FLUORESCENCE_OUT_OF_DEPTH_MATERIAL);
                 hairLinesGroup.add(outOfDepthStartLine);
             }
 
@@ -1007,13 +1164,7 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
                     segment.depthInfo.originalEnd.x, segment.depthInfo.originalEnd.y, segment.depthInfo.originalEnd.z
                 ]);
                 outOfDepthEndGeometry.setAttribute('position', new THREE.BufferAttribute(outOfDepthEndPositions, 3));
-                const outOfDepthEndMaterial = new THREE.LineBasicMaterial({
-                    color: 0xff0000, // 红色
-                    linewidth: 2.5,
-                    opacity: 1.0,
-                    transparent: false
-                });
-                const outOfDepthEndLine = new THREE.Line(outOfDepthEndGeometry, outOfDepthEndMaterial);
+                const outOfDepthEndLine = new THREE.Line(outOfDepthEndGeometry, FLUORESCENCE_OUT_OF_DEPTH_MATERIAL);
                 hairLinesGroup.add(outOfDepthEndLine);
             }
         }
@@ -1022,17 +1173,20 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
     // 将菌毛线段组添加到主组
     fluorescenceGroup.add(hairLinesGroup);
 
-    // 添加图例说明
-    addFluorescenceLegend(fluorescenceScene);
+    // 添加图例说明（HTML overlay, created once)
+    ensureFluorescenceLegend();
 
     // 渲染荧光场景 - 使用与投影视图相同的相机
     fluorescenceRenderer.render(fluorescenceScene, camera);
+
+    // The hair line geometries were created for this frame only: free their GPU buffers
+    hairLinesGroup.children.forEach((line) => line.geometry.dispose());
 
     // 更新投影菌毛长度直方图
     if (projectionHairLengthChart) {
         updateProjectionHairLengthHistogram(projectionHairLengths);
     } else {
-        console.error('投影菌毛长度图表未初始化');
+        console.error('Projected length chart is not initialised');
         initCharts();
     }
 
@@ -1040,8 +1194,7 @@ function updateFluorescenceView(projectionCapsule, capsuleBody, camera) {
     if (projectionHairLengths.length === 0) {
         const statsInfoElement = document.getElementById('projectionStatsInfo');
         if (statsInfoElement) {
-            statsInfoElement.innerHTML =
-                `<strong>统计结果:</strong> 当前视角下没有菌毛外伸出胶囊表面`;
+            statsInfoElement.innerHTML = tr('stats.noneInView');
         }
     }
 }
@@ -1078,26 +1231,27 @@ function recordHairObservation(observation, outsideLength) {
     currentHairObservations.push(observation);
 }
 
-function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
+// options.skipDebug: do not draw the debug canvas (batch fast mode)
+function analyzeFluorescenceHairs(projectionCapsule, capsuleBody, options) {
     // 存储菌毛分段信息，用于后续渲染
     const hairSegments = [];
 
     projectionHairLengths = [];
     currentHairObservations = [];
 
-    // 创建一个临时场景用于渲染胶囊体的二维投影
-    const tempScene = new THREE.Scene();
-    tempScene.background = new THREE.Color(0x000000); // 黑色背景
+    // 创建一个临时场景用于渲染胶囊体的二维投影（场景复用，白色共享材质）
+    if (!silhouetteScene) {
+        silhouetteScene = new THREE.Scene();
+        silhouetteScene.background = new THREE.Color(0x000000); // 黑色背景
+    }
+    const tempScene = silhouetteScene;
 
     // 添加胶囊体到临时场景（使用白色材质以便于区分）
     const capsuleBodyClone = capsuleBody.clone();
 
     capsuleBodyClone.traverse((child) => {
         if (child instanceof THREE.Mesh) {
-            child.material = new THREE.MeshBasicMaterial({
-                color: 0xffffff, // 白色
-                side: THREE.DoubleSide
-            });
+            child.material = SILHOUETTE_MATERIAL;
         }
     });
     tempScene.add(capsuleBodyClone);
@@ -1133,11 +1287,13 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
         titleDiv.style.fontSize = '12px';
         titleDiv.style.zIndex = '1000';
         titleDiv.style.display = 'none';
-        titleDiv.textContent = '投影分析图 (红点为菌毛与胞体边缘交点，红色线段为景深范围外菌毛片段)';
+        titleDiv.id = 'debugCanvasTitle';
+        titleDiv.textContent = tr('debug.title');
 
         // 添加切换按钮
         const toggleButton = document.createElement('button');
-        toggleButton.textContent = '显示/隐藏分析图';
+        toggleButton.id = 'debugCanvasToggle';
+        toggleButton.textContent = tr('debug.toggle');
         toggleButton.style.position = 'absolute';
         toggleButton.style.top = '450px';
         toggleButton.style.right = '10px';
@@ -1153,6 +1309,10 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
             const isVisible = debugProjectionCanvas.style.display !== 'none';
             debugProjectionCanvas.style.display = isVisible ? 'none' : 'block';
             titleDiv.style.display = isVisible ? 'none' : 'block';
+            // The debug canvas is only drawn while visible: redraw it when it is shown
+            if (!isVisible) {
+                updateProjectionView({ forceFull: true });
+            }
         });
 
         document.body.appendChild(debugProjectionCanvas);
@@ -1167,41 +1327,52 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
     sharedTempRenderer.setRenderTarget(sharedRenderTarget);
     sharedTempRenderer.render(tempScene, tempCamera);
     sharedTempRenderer.setRenderTarget(null);
+    tempScene.remove(capsuleBodyClone);
 
-    // 读取像素数据
-    const pixelBuffer = new Uint8Array(512 * 512 * 4);
+    // 读取像素数据（复用缓冲区）
+    const pixelBuffer = silhouettePixelBuffer;
     sharedTempRenderer.readRenderTargetPixels(sharedRenderTarget, 0, 0, 512, 512, pixelBuffer);
 
-    // 创建一个二维数组表示胶囊体的投影区域
-    const projectionMap = new Array(512);
+    // 用一维 Uint8Array（行优先，下标 y * 512 + x）表示胶囊体的投影区域
+    const projectionMap = silhouetteMap;
     for (let i = 0; i < 512; i++) {
-        projectionMap[i] = new Array(512);
         // 注意：这里使用 (511 - i) 来实现上下反转
+        const sourceRow = (511 - i) * 512;
+        const targetRow = i * 512;
         for (let j = 0; j < 512; j++) {
-            const index = ((511 - i) * 512 + j) * 4;
             // 如果像素是白色（胶囊体），则标记为1，否则为0
-            projectionMap[i][j] = (pixelBuffer[index] > 200) ? 1 : 0;
+            projectionMap[targetRow + j] = (pixelBuffer[(sourceRow + j) * 4] > 200) ? 1 : 0;
         }
     }
 
-    // 新增：将投影图显示到调试画布上
-    const ctx = debugProjectionCanvas.getContext('2d');
-    const imageData = ctx.createImageData(512, 512);
+    // The debug canvas is drawn only while it is visible (and never in batch fast mode)
+    const drawDebug = !(options && options.skipDebug) &&
+        debugProjectionCanvas.style.display !== 'none';
+    const ctx = drawDebug ? debugProjectionCanvas.getContext('2d') : null;
 
-    // 绘制投影图
-    for (let i = 0; i < 512; i++) {
-        for (let j = 0; j < 512; j++) {
-            const idx = (i * 512 + j) * 4;
-            const value = projectionMap[i][j] === 1 ? 255 : 0;
+    if (drawDebug) {
+        // 新增：将投影图显示到调试画布上
+        const imageData = ctx.createImageData(512, 512);
+        for (let p = 0; p < 512 * 512; p++) {
+            const idx = p * 4;
+            const value = projectionMap[p] === 1 ? 255 : 0;
             imageData.data[idx] = value;     // R
             imageData.data[idx + 1] = value; // G
             imageData.data[idx + 2] = value; // B
             imageData.data[idx + 3] = 255;   // A
         }
+        // 将图像数据放到画布上
+        ctx.putImageData(imageData, 0, 0);
     }
 
-    // 将图像数据放到画布上
-    ctx.putImageData(imageData, 0, 0);
+    // 检查点是否在相机视锥体内（相机在本次分析中不变，只需构造一次）
+    const frustum = new THREE.Frustum();
+    frustum.setFromProjectionMatrix(
+        new THREE.Matrix4().multiplyMatrices(
+            tempCamera.projectionMatrix,
+            tempCamera.matrixWorldInverse
+        )
+    );
 
     // 计算景深的前后边界（世界坐标系）
     const nearPlaneDistance = focusDistance - depthOfField / 2;
@@ -1245,15 +1416,6 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
             const depthClippedStart3D = hairInDepthOfField.start;
             const depthClippedEnd3D = hairInDepthOfField.end;
 
-            // 检查点是否在相机视锥体内
-            const frustum = new THREE.Frustum();
-            frustum.setFromProjectionMatrix(
-                new THREE.Matrix4().multiplyMatrices(
-                    tempCamera.projectionMatrix,
-                    tempCamera.matrixWorldInverse
-                )
-            );
-
             // Both endpoints outside the frustum: keep the hair record, mark invisible
             if (!frustum.containsPoint(rotatedStart3D) && !frustum.containsPoint(rotatedEnd3D)) {
                 currentHairObservations.push(observation);
@@ -1274,7 +1436,7 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
 
             // 修复：在调试画布上绘制菌毛线段，使用不同颜色表示景深内外
             // 确保先设置样式再绘制线段
-            if (originalStart2D && originalEnd2D) {  // 添加空值检查
+            if (drawDebug && originalStart2D && originalEnd2D) {  // 添加空值检查
                 // 根据菌毛在景深范围内外的情况使用不同颜色
                 if (hairInDepthOfField.fullyInRange) {
                     // 完全在景深范围内 - 绿色
@@ -1323,12 +1485,14 @@ function analyzeFluorescenceHairs(projectionCapsule, capsuleBody) {
             const intersections = findLineIntersectionsWithCapsule(start2DLimit, end2DLimit, projectionMap);
 
             // 新增：在调试画布上标记交点
-            intersections.forEach(point => {
-                ctx.beginPath();
-                ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
-                ctx.fill();
-            });
+            if (drawDebug) {
+                intersections.forEach(point => {
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.8)';
+                    ctx.fill();
+                });
+            }
 
             // 如果没有找到交点，检查起点是否在胶囊体内
             if (intersections.length === 0) {
@@ -1523,7 +1687,7 @@ function setupBatchSimulationButton() {
 
     // 添加错误检查
     if (!batchBtn || !batchDialog || !cancelBatch || !startBatch) {
-        console.error('批量模拟所需的HTML元素未找到，请检查HTML文件');
+        console.error('HTML elements required by the batch simulation were not found');
         return; // 如果元素不存在，提前退出函数
     }
 
@@ -1546,7 +1710,7 @@ function setupBatchSimulationButton() {
         progressBar.style.display = 'block';
         progressBar.value = 0;
         progressBar.max = modelCount * angleCount;
-        progressText.textContent = '准备中...';
+        progressText.textContent = tr('batch.preparing');
 
         // 隐藏开始按钮，显示取消按钮
         if (cancelRunningBatch) {
@@ -1564,7 +1728,7 @@ function setupBatchSimulationButton() {
     if (cancelRunningBatch) {
         cancelRunningBatch.addEventListener('click', () => {
             isBatchSimulationCancelled = true;
-            progressText.textContent = '正在取消...';
+            progressText.textContent = tr('batch.cancelling');
         });
     }
 }
@@ -1578,11 +1742,27 @@ function generateRandomModelParams() {
         hairCount: parseInt(document.getElementById('hairCountValue').value),
         meanHairLength: parseFloat(document.getElementById('hairLengthValue').value),
         shapeParam: parseFloat(document.getElementById('shapeParamValue').value),
+        ...readAnchorSettings(),
         // 保持旋转角度不变
         rotationX: parseFloat(document.getElementById('rotationXValue').value),
         rotationY: parseFloat(document.getElementById('rotationYValue').value),
         rotationZ: parseFloat(document.getElementById('rotationZValue').value)
     };
+}
+
+const BATCH_CANCELLED = 'BATCH_CANCELLED';
+
+// Let the browser handle events and paint. MessageChannel is not clamped like setTimeout(0),
+// and it is not throttled to 1 s when the tab is in the background.
+function yieldToBrowser() {
+    return new Promise((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+            channel.port1.close();
+            resolve();
+        };
+        channel.port2.postMessage(0);
+    });
 }
 
 // 修改 startBatchSimulation 函数
@@ -1597,13 +1777,14 @@ async function startBatchSimulation(modelCount, angleCount, progressBar, progres
         hairCount: parseInt(document.getElementById('hairCountValue').value),
         meanHairLength: parseFloat(document.getElementById('hairLengthValue').value),
         shapeParam: parseFloat(document.getElementById('shapeParamValue').value),
+        ...readAnchorSettings(),
         rotationX: parseFloat(document.getElementById('rotationXValue').value),
         rotationY: parseFloat(document.getElementById('rotationYValue').value),
         rotationZ: parseFloat(document.getElementById('rotationZValue').value)
     };
 
     // 禁用交互控件
-    const controlInputs = document.querySelectorAll('#controls input, #controls button');
+    const controlInputs = document.querySelectorAll('#controls input, #controls button, #controls select');
     controlInputs.forEach(input => {
         if (input.id !== 'cancelRunningBatch') {
             input.disabled = true;
@@ -1614,12 +1795,18 @@ async function startBatchSimulation(modelCount, angleCount, progressBar, progres
     const allResults = [];
     let progress = 0;
 
+    // Everything below is synchronous per pose: the analysis result is complete as soon as applyAngleParams() returns,
+    // so no fixed waits are needed. The loop only yields to the browser in short time slices (UI stays responsive).
+    batchFastMode = true;
+    let lastYieldTime = performance.now();
+    let lastPreviewTime = lastYieldTime;
+
     try {
         // 循环生成不同的模型（只重新生成菌毛，不改变参数）
         for (let modelIndex = 0; modelIndex < modelCount; modelIndex++) {
             // 检查是否取消
             if (isBatchSimulationCancelled) {
-                throw new Error('用户取消了批量模拟');
+                throw new Error(BATCH_CANCELLED);
             }
 
             // 获取当前参数
@@ -1628,27 +1815,21 @@ async function startBatchSimulation(modelCount, angleCount, progressBar, progres
             // 应用参数并重新生成菌毛
             applyModelParams(modelParams);
 
-            // 确保菌毛生成后等待足够时间，让currentHairLengths数组被正确填充
-            await new Promise(resolve => setTimeout(resolve, 200));
-
             // 更新进度信息
-            progressText.textContent = `正在模拟模型 ${modelIndex + 1}/${modelCount}`;
+            progressText.textContent = tr('batch.model', { model: modelIndex + 1, models: modelCount });
 
             // 循环生成不同的姿态角
             for (let angleIndex = 0; angleIndex < angleCount; angleIndex++) {
                 // 再次检查是否取消
                 if (isBatchSimulationCancelled) {
-                    throw new Error('用户取消了批量模拟');
+                    throw new Error(BATCH_CANCELLED);
                 }
 
                 // 为每个姿态随机生成角度
                 const angleParams = generateRandomAngles();
 
-                // 应用随机角度到UI和模型
+                // 应用随机角度到UI和模型（同步完成投影分析）
                 applyAngleParams(angleParams);
-
-                // 等待一小段时间，确保模型和视图更新完成，投影菌毛长度数组被正确填充
-                await new Promise(resolve => setTimeout(resolve, 200));
 
                 // 收集当前模型和姿态下的数据
                 const result = collectSimulationData(modelIndex, angleIndex, modelParams, angleParams);
@@ -1656,30 +1837,43 @@ async function startBatchSimulation(modelCount, angleCount, progressBar, progres
 
                 // 更新进度条
                 progress++;
-                progressBar.value = progress;
-                progressText.textContent = `模型 ${modelIndex + 1}/${modelCount}, 姿态 ${angleIndex + 1}/${angleCount}`;
 
-                // 让UI有时间更新
-                await new Promise(resolve => setTimeout(resolve, 50));
+                // Yield to the browser every ~40 ms; refresh the views as a low-rate live preview
+                const now = performance.now();
+                if (now - lastYieldTime > 40) {
+                    progressBar.value = progress;
+                    progressText.textContent = tr('batch.progress', {
+                        model: modelIndex + 1, models: modelCount, pose: angleIndex + 1, poses: angleCount
+                    });
+                    if (now - lastPreviewTime > 250) {
+                        updateProjectionView({ forceFull: true });
+                        lastPreviewTime = now;
+                    }
+                    await yieldToBrowser();
+                    lastYieldTime = performance.now();
+                }
             }
         }
+
+        progressBar.value = progress;
 
         // 导出所有结果到Excel
         if (allResults.length > 0) {
             exportBatchResultsToExcel(allResults);
-            progressText.textContent = '批量模拟完成！结果已导出到Excel文件。';
+            progressText.textContent = tr('batch.done');
         } else {
-            progressText.textContent = '批量模拟完成，但没有收集到数据。';
+            progressText.textContent = tr('batch.noData');
         }
     } catch (error) {
-        console.error('批量模拟过程中发生错误:', error);
-
-        if (error.message === '用户取消了批量模拟') {
-            progressText.textContent = '批量模拟已取消。';
+        if (error.message === BATCH_CANCELLED) {
+            progressText.textContent = tr('batch.cancelled');
         } else {
-            progressText.textContent = '批量模拟过程中发生错误，请查看控制台获取详情。';
+            console.error('Error during batch simulation:', error);
+            progressText.textContent = tr('batch.error');
         }
     } finally {
+        batchFastMode = false;
+
         // 恢复原始参数
         applyModelParams(originalParams);
         applyAngleParams(originalParams);
@@ -1688,6 +1882,8 @@ async function startBatchSimulation(modelCount, angleCount, progressBar, progres
         controlInputs.forEach(input => {
             input.disabled = false;
         });
+        // Re-apply the mode-dependent disabled state of the share inputs
+        syncAnchorControlState();
 
         // 隐藏进度条
         progressBar.style.display = 'none';
@@ -1709,12 +1905,44 @@ async function startBatchSimulation(modelCount, angleCount, progressBar, progres
 }
 
 // 生成随机姿态角
+// Uniform random orientation on SO(3) (Shoemake, 1992).
+// Uniform Euler angles are NOT isotropic; a uniform unit quaternion is.
+// The pose is returned as XYZ Euler angles (degrees, 0.01 deg resolution) and applied from exactly these values,
+// so the exported angles reproduce the analysed pose exactly (the UI sliders use the same convention).
 function generateRandomAngles() {
+    const u1 = Math.random();
+    const u2 = Math.random();
+    const u3 = Math.random();
+    const a = Math.sqrt(1 - u1);
+    const b = Math.sqrt(u1);
+    const quaternion = new THREE.Quaternion(
+        a * Math.sin(2 * Math.PI * u2),
+        a * Math.cos(2 * Math.PI * u2),
+        b * Math.sin(2 * Math.PI * u3),
+        b * Math.cos(2 * Math.PI * u3)
+    );
+    const euler = new THREE.Euler().setFromQuaternion(quaternion, 'XYZ');
+    const toDeg = (rad) => Number(THREE.MathUtils.radToDeg(rad).toFixed(2));
     return {
-        rotationX: Math.round(Math.random() * 360 - 180),
-        rotationY: Math.round(Math.random() * 360 - 180),
-        rotationZ: Math.round(Math.random() * 360 - 180)
+        rotationX: toDeg(euler.x),
+        rotationY: toDeg(euler.y),
+        rotationZ: toDeg(euler.z)
     };
+}
+
+function describeAnchorMode(mode) {
+    return mode === 'area' ? tr('anchor.area') : tr('anchor.fixed');
+}
+
+// Single definition of the pose convention: Euler XYZ (three.js order), angles in degrees
+function quaternionFromEulerDegrees(rotationX, rotationY, rotationZ) {
+    const euler = new THREE.Euler(
+        THREE.MathUtils.degToRad(rotationX),
+        THREE.MathUtils.degToRad(rotationY),
+        THREE.MathUtils.degToRad(rotationZ),
+        'XYZ'
+    );
+    return new THREE.Quaternion().setFromEuler(euler);
 }
 
 // 应用模型参数到UI和模型
@@ -1734,6 +1962,8 @@ function applyModelParams(params) {
     document.getElementById('shapeParamValue').value = params.shapeParam.toFixed(1);
     document.getElementById('shapeParam').value = params.shapeParam;
 
+    applyAnchorSettings(params);
+
     // 更新胶囊模型
     updateCapsule();
 }
@@ -1749,15 +1979,8 @@ function applyAngleParams(params) {
     document.getElementById('rotationZValue').value = params.rotationZ;
     document.getElementById('rotationZ').value = params.rotationZ;
 
-    // 创建一个表示当前旋转的四元数
-    const quaternion = new THREE.Quaternion();
-    const euler = new THREE.Euler(
-        THREE.MathUtils.degToRad(params.rotationX),
-        THREE.MathUtils.degToRad(params.rotationY),
-        THREE.MathUtils.degToRad(params.rotationZ),
-        'XYZ'
-    );
-    quaternion.setFromEuler(euler);
+    // The pose is defined by the XYZ Euler angles shown in the UI and written to the export
+    const quaternion = quaternionFromEulerDegrees(params.rotationX, params.rotationY, params.rotationZ);
 
     // 应用四元数到胶囊
     capsule.quaternion.copy(quaternion);
@@ -1815,7 +2038,7 @@ function collectSimulationData(modelIndex, angleIndex, modelParams, angleParams)
 
         return result;
     } catch (error) {
-        console.error('收集模拟数据时发生错误:', error);
+        console.error('Error while collecting simulation data:', error);
         return {
             modelIndex: modelIndex + 1,
             angleIndex: angleIndex + 1,
@@ -1842,34 +2065,40 @@ function exportBatchResultsToExcel(results) {
         const wb = XLSX.utils.book_new();
 
         // 创建模型参数工作表
-        const modelParamsRows = [
-            ['模型ID', '高度', '半径', '菌毛数量', '平均菌毛长度', '形状参数', '景深范围', '焦点距离']
-        ];
+        const modelParamsRows = [[
+            tr('col.modelId'), tr('col.height'), tr('col.radius'), tr('col.hairCount'), tr('col.meanLength'),
+            tr('col.concentration'), tr('col.dofRange'), tr('col.focus'), tr('col.anchorMode'), tr('col.cylinderShare')
+        ]];
 
         // 创建姿态角工作表
-        const angleParamsRows = [
-            ['模型ID', '姿态ID', 'X轴旋转', 'Y轴旋转', 'Z轴旋转']
-        ];
+        const angleParamsRows = [[
+            tr('col.modelId'), tr('col.poseId'), tr('col.rotX'), tr('col.rotY'), tr('col.rotZ')
+        ]];
 
         // 创建统计数据工作表
-        const statsRows = [
-            ['模型ID', '姿态ID', '菌毛总数', '可见菌毛数', '可见比例', '平均外伸长度', '最小外伸长度', '最大外伸长度']
-        ];
+        const statsRows = [[
+            tr('col.modelId'), tr('col.poseId'), tr('col.totalPili'), tr('col.visiblePili'), tr('col.visibleFraction'),
+            tr('col.meanOutside'), tr('col.minOutside'), tr('col.maxOutside')
+        ]];
 
-        const trueLengthRows = [
-            ['模型ID', '菌毛序号', '菌毛ID', '真实长度']
-        ];
+        const trueLengthRows = [[
+            tr('col.modelId'), tr('col.hairNo'), tr('col.hairId'), tr('col.trueLength')
+        ]];
 
-        const observationRows = [
-            ['模型ID', '姿态ID', '菌毛序号', '观测ID', '真实长度', '投影长度', '是否可见']
-        ];
+        const observationRows = [[
+            tr('col.modelId'), tr('col.poseId'), tr('col.hairNo'), tr('col.observationId'),
+            tr('col.trueLength'), tr('col.projLength'), tr('col.visible')
+        ]];
 
         const notesRows = [
-            ['项目', '说明'],
-            ['可见判定', `焦深内轮廓外伸投影长度 ≥ ${VISIBLE_PROJECTION_LENGTH_THRESHOLD}（与模型长度单位相同）`],
-            ['真实菌毛长度表', '每个模型的每根菌毛只出现一行，用于真长分布统计'],
-            ['菌毛观测数据表', '每个姿态一行；同一根菌毛的真实长度会随姿态重复出现，仅用于与该姿态的投影长度配对'],
-            ['真长分布图', '只使用真实菌毛长度表，不把各姿态的重复真长当作独立样本']
+            [tr('col.item'), tr('col.description')],
+            [tr('note.visible.key'), tr('note.visible.text', { threshold: VISIBLE_PROJECTION_LENGTH_THRESHOLD })],
+            [tr('note.trueSheet.key'), tr('note.trueSheet.text')],
+            [tr('note.obsSheet.key'), tr('note.obsSheet.text')],
+            [tr('note.trueDist.key'), tr('note.trueDist.text')],
+            [tr('note.anchor.key'), tr('note.anchor.text')],
+            [tr('note.pose.key'), tr('note.pose.text')],
+            [tr('note.length.key'), tr('note.length.text')]
         ];
 
         // 填充数据
@@ -1888,13 +2117,20 @@ function exportBatchResultsToExcel(results) {
                 uniqueModels.add(modelId);
                 modelParamsRows.push([
                     modelId,
-                    result.modelParams.height.toFixed(2),
-                    result.modelParams.radius.toFixed(2),
+                    roundTo(result.modelParams.height, 2),
+                    roundTo(result.modelParams.radius, 2),
                     result.modelParams.hairCount,
-                    result.modelParams.meanHairLength.toFixed(2),
-                    result.modelParams.shapeParam.toFixed(2),
-                    result.depthOfFieldParams.depthOfField.toFixed(2),
-                    result.depthOfFieldParams.focusDistance.toFixed(2)
+                    roundTo(result.modelParams.meanHairLength, 2),
+                    roundTo(result.modelParams.shapeParam, 2),
+                    roundTo(result.depthOfFieldParams.depthOfField, 2),
+                    roundTo(result.depthOfFieldParams.focusDistance, 2),
+                    describeAnchorMode(result.modelParams.anchorMode),
+                    roundTo(computeCylinderFraction(
+                        result.modelParams.radius,
+                        result.modelParams.height,
+                        result.modelParams.anchorMode,
+                        result.modelParams.cylinderShare
+                    ) * 100, 1)
                 ]);
 
                 if (result.hairLengths && result.hairLengths.length > 0) {
@@ -1904,7 +2140,7 @@ function exportBatchResultsToExcel(results) {
                             modelId,
                             index + 1,
                             `${modelIdStr}-${hairIdStr}`,
-                            Number(length).toFixed(3)
+                            roundTo(length, 3)
                         ]);
                     });
                 }
@@ -1922,7 +2158,7 @@ function exportBatchResultsToExcel(results) {
             // 添加统计数据
             const totalHairs = result.hairStats.count;
             const visibleHairs = result.projectionStats.count;
-            const visibleRatio = totalHairs > 0 ? (visibleHairs / totalHairs).toFixed(2) : '0.00';
+            const visibleRatio = totalHairs > 0 ? roundTo(visibleHairs / totalHairs, 2) : 0;
 
             statsRows.push([
                 modelId,
@@ -1930,9 +2166,9 @@ function exportBatchResultsToExcel(results) {
                 totalHairs,
                 visibleHairs,
                 visibleRatio,
-                result.projectionStats.mean.toFixed(2),
-                result.projectionStats.min.toFixed(2),
-                result.projectionStats.max.toFixed(2)
+                roundTo(result.projectionStats.mean, 2),
+                roundTo(result.projectionStats.min, 2),
+                roundTo(result.projectionStats.max, 2)
             ]);
 
             const observations = (result.hairObservations && result.hairObservations.length > 0)
@@ -1952,9 +2188,9 @@ function exportBatchResultsToExcel(results) {
                     angleId,
                     hairNumber,
                     `${modelIdStr}-${angleIdStr}-${hairIdStr}`,
-                    Number(item.trueLength).toFixed(3),
-                    Number(item.projectionLength).toFixed(3),
-                    item.isVisible ? '是' : '否'
+                    roundTo(item.trueLength, 3),
+                    roundTo(item.projectionLength, 3),
+                    item.isVisible ? tr('col.yes') : tr('col.no')
                 ]);
             });
         });
@@ -1967,12 +2203,12 @@ function exportBatchResultsToExcel(results) {
         const trueLengthWs = XLSX.utils.aoa_to_sheet(trueLengthRows);
         const observationWs = XLSX.utils.aoa_to_sheet(observationRows);
 
-        XLSX.utils.book_append_sheet(wb, notesWs, '数据说明');
-        XLSX.utils.book_append_sheet(wb, modelParamsWs, '模型参数');
-        XLSX.utils.book_append_sheet(wb, angleParamsWs, '姿态角参数');
-        XLSX.utils.book_append_sheet(wb, statsWs, '统计数据');
-        XLSX.utils.book_append_sheet(wb, trueLengthWs, '真实菌毛长度');
-        XLSX.utils.book_append_sheet(wb, observationWs, '菌毛观测数据');
+        XLSX.utils.book_append_sheet(wb, notesWs, tr('sheet.notes'));
+        XLSX.utils.book_append_sheet(wb, modelParamsWs, tr('sheet.modelParams'));
+        XLSX.utils.book_append_sheet(wb, angleParamsWs, tr('sheet.poseAngles'));
+        XLSX.utils.book_append_sheet(wb, statsWs, tr('sheet.stats'));
+        XLSX.utils.book_append_sheet(wb, trueLengthWs, tr('sheet.trueLengths'));
+        XLSX.utils.book_append_sheet(wb, observationWs, tr('sheet.observations'));
 
         // 为每个模型创建详细数据工作表
         uniqueModels.forEach(modelId => {
@@ -1980,9 +2216,10 @@ function exportBatchResultsToExcel(results) {
 
             if (modelResults.length > 0) {
                 // 创建该模型的详细数据工作表
-                const detailRows = [
-                    ['姿态ID', 'X轴旋转', 'Y轴旋转', 'Z轴旋转', '可见菌毛数', '平均外伸长度']
-                ];
+                const detailRows = [[
+                    tr('col.poseId'), tr('col.rotX'), tr('col.rotY'), tr('col.rotZ'),
+                    tr('col.visiblePili'), tr('col.meanOutside')
+                ]];
 
                 modelResults.forEach(result => {
                     detailRows.push([
@@ -1991,12 +2228,12 @@ function exportBatchResultsToExcel(results) {
                         result.angleParams.rotationY,
                         result.angleParams.rotationZ,
                         result.projectionStats.count,
-                        result.projectionStats.mean.toFixed(2)
+                        roundTo(result.projectionStats.mean, 2)
                     ]);
                 });
 
                 const detailWs = XLSX.utils.aoa_to_sheet(detailRows);
-                XLSX.utils.book_append_sheet(wb, detailWs, `模型${modelId}详细数据`);
+                XLSX.utils.book_append_sheet(wb, detailWs, tr('sheet.modelDetail', { id: modelId }));
             }
         });
 
@@ -2004,15 +2241,15 @@ function exportBatchResultsToExcel(results) {
         const now = new Date();
         const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}`;
 
-        XLSX.writeFile(wb, `胶囊细菌批量模拟数据_${timestamp}.xlsx`);
+        XLSX.writeFile(wb, `${tr('file.batchData')}_${timestamp}.xlsx`);
 
         // 新增：绘制并保存全局分布图
         generateAndSaveDistributionCharts(results, timestamp);
 
         return true;
     } catch (error) {
-        console.error('导出Excel文件时发生错误:', error);
-        alert('导出Excel文件时发生错误，请查看控制台获取详情。');
+        console.error('Error while exporting the Excel file:', error);
+        alert(tr('alert.excelError'));
         return false;
     }
 }
@@ -2047,24 +2284,25 @@ function generateAndSaveDistributionCharts(results, timestamp) {
 
         // 如果有数据，则绘制并保存图表
         if (allHairLengths.length > 0) {
-            saveDistributionChart(allHairLengths, '真实菌毛长度分布', timestamp);
+            saveDistributionChart(allHairLengths, tr('img.title.true'), timestamp, 'file.trueDist');
         }
 
         if (allProjectionLengths.length > 0) {
-            saveDistributionChart(allProjectionLengths, '投影菌毛长度分布', timestamp);
+            saveDistributionChart(allProjectionLengths, tr('img.title.proj'), timestamp, 'file.projDist');
         }
         
         // 新增：如果有可见菌毛数量数据，绘制并保存分布图
         if (allVisibleHairCounts.length > 0) {
-            saveVisibleHairCountChart(allVisibleHairCounts, '可见菌毛数量分布', timestamp);
+            saveVisibleHairCountChart(allVisibleHairCounts, tr('img.title.visible'), timestamp);
         }
     } catch (error) {
-        console.error('生成分布图时发生错误:', error);
+        console.error('Error while generating the distribution charts:', error);
     }
 }
 
 // 新增函数：保存可见菌毛数量分布图
 function saveVisibleHairCountChart(data, title, timestamp) {
+    const fileBaseName = tr('file.visibleCount');
     // 创建一个离屏画布
     const canvas = document.createElement('canvas');
     canvas.width = 800;
@@ -2147,7 +2385,9 @@ function saveVisibleHairCountChart(data, title, timestamp) {
                 },
                 subtitle: {
                     display: true,
-                    text: `平均值: ${mean.toFixed(1)}, 中位数: ${median.toFixed(1)}, 标准差: ${stdDev.toFixed(1)}`,
+                    text: tr('img.subtitle', {
+                        mean: mean.toFixed(1), median: median.toFixed(1), sd: stdDev.toFixed(1)
+                    }),
                     font: {
                         size: 28
                     },
@@ -2164,7 +2404,7 @@ function saveVisibleHairCountChart(data, title, timestamp) {
                     beginAtZero: true,
                     title: {
                         display: true,
-                        text: '百分比 (%)',
+                        text: tr('img.axis.percent'),
                         font: {
                             size: 24
                         }
@@ -2178,7 +2418,7 @@ function saveVisibleHairCountChart(data, title, timestamp) {
                 x: {
                     title: {
                         display: true,
-                        text: '可见菌毛数量',
+                        text: tr('img.axis.visibleCount'),
                         font: {
                             size: 24
                         }
@@ -2218,20 +2458,22 @@ function saveVisibleHairCountChart(data, title, timestamp) {
 
             const a = document.createElement('a');
             a.href = url;
-            a.download = `可见菌毛数量分布_${timestamp}.png`;
+            a.download = `${fileBaseName}_${timestamp}.png`;
             a.click();
 
             // 清理
             document.body.removeChild(canvas);
             chart.destroy();
         } catch (error) {
-            console.error('保存可见菌毛数量分布图时发生错误:', error);
+            console.error('Error while saving the visible pili count chart:', error);
         }
     }, 500);  // 给Chart.js足够的时间渲染
 }
 
 // 新增函数：保存分布图
-function saveDistributionChart(data, title, timestamp) {
+function saveDistributionChart(data, title, timestamp, fileNameKey) {
+    // Resolve texts now so a language switch during the 500 ms render delay cannot mix languages
+    const fileBaseName = tr(fileNameKey);
     // 创建一个离屏画布
     const canvas = document.createElement('canvas');
     canvas.width = 800;
@@ -2315,7 +2557,9 @@ function saveDistributionChart(data, title, timestamp) {
                 },
                 subtitle: {
                     display: true,
-                    text: `平均值: ${mean.toFixed(2)}, 中位数: ${median.toFixed(2)}, 标准差: ${stdDev.toFixed(2)}`,
+                    text: tr('img.subtitle', {
+                        mean: mean.toFixed(2), median: median.toFixed(2), sd: stdDev.toFixed(2)
+                    }),
                     font: {
                         size: 28
                     },
@@ -2331,7 +2575,7 @@ function saveDistributionChart(data, title, timestamp) {
                 x: {
                     title: {
                         display: true,
-                        text: '长度',
+                        text: tr('img.axis.length'),
                         font: {
                             size: 28,
                             weight: 'bold'
@@ -2355,7 +2599,7 @@ function saveDistributionChart(data, title, timestamp) {
                 y: {
                     title: {
                         display: true,
-                        text: '频率 (%)',  // 修改Y轴标题为频率
+                        text: tr('img.axis.frequency'),
                         font: {
                             size: 28,
                             weight: 'bold'
@@ -2403,16 +2647,15 @@ function saveDistributionChart(data, title, timestamp) {
             const url = exportCanvas.toDataURL('image/png', 1.0);
 
             const a = document.createElement('a');
-            const chartType = title.includes('真实') ? '真实长度' : '投影长度';
             a.href = url;
-            a.download = `胶囊细菌${chartType}分布图_${timestamp}.png`;
+            a.download = `${fileBaseName}_${timestamp}.png`;
             a.click();
 
             // 清理
             document.body.removeChild(canvas);
             chart.destroy();
         } catch (error) {
-            console.error('保存图表图片时发生错误:', error);
+            console.error('Error while saving the chart image:', error);
         }
     }, 500);
 }
@@ -2454,16 +2697,17 @@ function isPointInsideCapsule(point2D, projectionMap) {
         return false;
     }
 
-    return projectionMap[y][x] === 1;
+    return projectionMap[y * 512 + x] === 1;
 }
 
 // 辅助函数：计算两个2D点之间的距离
 function distanceBetween2DPoints(p1, p2) {
     const pixelDistance = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
 
-    // 将像素距离转换为实际长度
-    // 基于正交相机的视锥体宽度和渲染目标的宽度计算比例
-    const pixelToWorldRatio = (projectionCamera.right - projectionCamera.left) / 512;
+    // Convert pixel distance to model units.
+    // Orthographic visible width = (right - left) / zoom, so zoom must be included.
+    const pixelToWorldRatio = (projectionCamera.right - projectionCamera.left) /
+        (projectionCamera.zoom * 512);
 
     // 返回实际长度
     return pixelDistance * pixelToWorldRatio;
@@ -2494,7 +2738,7 @@ function findLineIntersectionsWithCapsule(start, end, projectionMap) {
         }
 
         // 检查当前点是否在胶囊体内部
-        const currentState = (projectionMap[y0][x0] === 1);
+        const currentState = (projectionMap[y0 * 512 + x0] === 1);
 
         // 如果状态发生变化，记录交点
         if (lastState !== null && currentState !== lastState) {
@@ -2523,60 +2767,43 @@ function findLineIntersectionsWithCapsule(start, end, projectionMap) {
     return intersections;
 }
 
-// 修改 addFluorescenceLegend 函数，添加景深范围外标记的图例
-function addFluorescenceLegend(scene) {
-    // 首先清除场景中可能存在的旧图例对象
-    for (let i = scene.children.length - 1; i >= 0; i--) {
-        const child = scene.children[i];
-        // 通过位置或材质颜色识别图例元素
-        if (child instanceof THREE.Mesh &&
-            child.material &&
-            child.material.color &&
-            child.material.color.getHex() === 0x222222) {
-            scene.remove(child);
-        } else if (child instanceof THREE.Line &&
-            (child.material.color.getHex() === 0x88cc88 ||
-                child.material.color.getHex() === 0xffcc00 ||
-                child.material.color.getHex() === 0x00ff00 ||
-                child.material.color.getHex() === 0xff0000)) {
-            // 检查线段的位置是否在图例区域
-            const positions = child.geometry.attributes.position.array;
-            const x = positions[0];
-            if (x > 0.3) { // 图例在右侧
-                scene.remove(child);
-            }
-        }
-    }
+// Fluorescence legend (HTML overlay). Created once, text refreshed on language change.
+function renderFluorescenceLegendText(legendDiv) {
+    const swatch = (color, extra) =>
+        `<span style="display:inline-block;width:12px;height:2px;background-color:${color};margin-right:5px;${extra || ''}"></span>`;
+    legendDiv.innerHTML =
+        `<div style="margin-bottom:4px;">${swatch('#88cc88')}${tr('legend.body')}</div>` +
+        `<div style="margin-bottom:4px;">${swatch('#ffcc00')}${tr('legend.inside')}</div>` +
+        `<div style="margin-bottom:4px;">${swatch('#00ff00')}${tr('legend.outside')}</div>` +
+        `<div>${swatch('#ff0000', 'border-top:1px dashed #ff0000;')}${tr('legend.outOfDepth')}</div>`;
+}
 
-    // 添加文字标签 - 使用HTML叠加层
+function ensureFluorescenceLegend() {
     const fluorescenceCanvas = document.getElementById('fluorescenceCanvas');
-    if (fluorescenceCanvas) {
-        // 移除旧的图例文字（如果存在）
-        const oldLegend = document.getElementById('fluorescenceLegendText');
-        if (oldLegend) {
-            oldLegend.remove();
-        }
+    if (!fluorescenceCanvas || document.getElementById('fluorescenceLegendText')) {
+        return;
+    }
+    const legendDiv = document.createElement('div');
+    legendDiv.id = 'fluorescenceLegendText';
+    legendDiv.style.position = 'absolute';
+    legendDiv.style.bottom = '5px';
+    legendDiv.style.right = '5px';
+    legendDiv.style.color = 'white';
+    legendDiv.style.fontSize = '10px';
+    legendDiv.style.fontFamily = 'Arial, sans-serif';
+    legendDiv.style.textShadow = '1px 1px 1px black';
+    legendDiv.style.pointerEvents = 'none'; // 防止干扰鼠标事件
+    legendDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    legendDiv.style.padding = '5px';
+    legendDiv.style.borderRadius = '3px';
+    renderFluorescenceLegendText(legendDiv);
+    fluorescenceCanvas.appendChild(legendDiv);
+}
 
-        const legendDiv = document.createElement('div');
-        legendDiv.id = 'fluorescenceLegendText';
-        legendDiv.style.position = 'absolute';
-        legendDiv.style.bottom = '5px';
-        legendDiv.style.right = '5px';
-        legendDiv.style.color = 'white';
-        legendDiv.style.fontSize = '10px';
-        legendDiv.style.fontFamily = 'Arial, sans-serif';
-        legendDiv.style.textShadow = '1px 1px 1px black';
-        legendDiv.style.pointerEvents = 'none'; // 防止干扰鼠标事件
-        legendDiv.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-        legendDiv.style.padding = '5px';
-        legendDiv.style.borderRadius = '3px';
-        legendDiv.innerHTML = `
-            <div style="margin-bottom:4px;"><span style="display:inline-block;width:12px;height:2px;background-color:#88cc88;margin-right:5px;"></span>胶囊体</div>
-            <div style="margin-bottom:4px;"><span style="display:inline-block;width:12px;height:2px;background-color:#ffcc00;margin-right:5px;"></span>菌毛内部段</div>
-            <div style="margin-bottom:4px;"><span style="display:inline-block;width:12px;height:2px;background-color:#00ff00;margin-right:5px;"></span>菌毛外伸段</div>
-            <div><span style="display:inline-block;width:12px;height:2px;background-color:#ff0000;margin-right:5px;border-top:1px dashed #ff0000;"></span>景深范围外</div>
-        `;
-        fluorescenceCanvas.appendChild(legendDiv);
+function refreshFluorescenceLegend() {
+    const legendDiv = document.getElementById('fluorescenceLegendText');
+    if (legendDiv) {
+        renderFluorescenceLegendText(legendDiv);
     }
 }
 
@@ -2588,31 +2815,53 @@ function setupSizeControls() {
     const radiusSlider = document.getElementById('radius');
     const radiusInput = document.getElementById('radiusValue');
 
+    // Keep height >= 2 * radius (a capsule needs a non-negative cylinder length):
+    // the height lower bound follows the radius, the radius upper bound follows the height.
+    function syncSizeLimits() {
+        const h = parseFloat(heightInput.value);
+        const r = parseFloat(radiusInput.value);
+        const minHeight = Math.max(1, Math.ceil(2 * r * 10 - 1e-9) / 10);
+        const maxRadius = Math.min(1, Math.floor(h * 5 + 1e-9) / 10);
+        heightSlider.min = heightInput.min = minHeight;
+        radiusSlider.max = radiusInput.max = maxRadius;
+    }
+    syncSizeLimits();
+
     heightSlider.addEventListener('input', () => {
         heightInput.value = heightSlider.value;
+        syncSizeLimits();
         updateCapsule();
     });
 
     heightInput.addEventListener('change', () => {
-        let value = parseFloat(heightInput.value);
-        value = Math.max(1, Math.min(5, value));
+        let value = readNumberOr(heightInput, heightSlider);
+        value = Math.max(parseFloat(heightInput.min), Math.min(5, value));
         heightSlider.value = value;
         heightInput.value = value;
+        syncSizeLimits();
         updateCapsule();
     });
 
     radiusSlider.addEventListener('input', () => {
         radiusInput.value = radiusSlider.value;
+        syncSizeLimits();
         updateCapsule();
     });
 
     radiusInput.addEventListener('change', () => {
-        let value = parseFloat(radiusInput.value);
-        value = Math.max(0.1, Math.min(1, value));
+        let value = readNumberOr(radiusInput, radiusSlider);
+        value = Math.max(0.1, Math.min(parseFloat(radiusInput.max), value));
         radiusSlider.value = value;
         radiusInput.value = value;
+        syncSizeLimits();
         updateCapsule();
     });
+}
+
+// Parse a numeric text input; an empty or invalid entry falls back to the paired slider's current value
+function readNumberOr(input, slider) {
+    const value = parseFloat(input.value);
+    return Number.isFinite(value) ? value : parseFloat(slider.value);
 }
 
 // 添加一个简单的防抖函数
@@ -2642,8 +2891,10 @@ function setupDepthOfFieldControls() {
     });
 
     depthOfFieldValue.addEventListener('change', function () {
-        depthOfFieldSlider.value = this.value;
-        depthOfField = parseFloat(this.value);
+        const value = readNumberOr(this, depthOfFieldSlider);
+        this.value = value;
+        depthOfFieldSlider.value = value;
+        depthOfField = value;
         updateDepthPlanesPosition();
         updateProjectionView();
     });
@@ -2657,8 +2908,10 @@ function setupDepthOfFieldControls() {
     });
 
     focusDistanceValue.addEventListener('change', function () {
-        focusDistanceSlider.value = this.value;
-        focusDistance = parseFloat(this.value);
+        const value = readNumberOr(this, focusDistanceSlider);
+        this.value = value;
+        focusDistanceSlider.value = value;
+        focusDistance = value;
         updateDepthPlanesPosition();
         updateProjectionView();
     });
@@ -2677,12 +2930,10 @@ function setupDepthOfFieldControls() {
         const sideView = document.getElementById('sideView');
         if (sideView.style.display === 'none') {
             sideView.style.display = 'block';
-            this.textContent = '隐藏';
             sideViewVisible = true;
             updateSideView();
         } else {
             sideView.style.display = 'none';
-            this.textContent = '隐藏';
             sideViewVisible = false;
         }
     });
@@ -2692,14 +2943,18 @@ function setupDepthOfFieldControls() {
 function setupRotationControls() {
     const axes = ['X', 'Y', 'Z'];
 
-    // 创建一个四元数来存储当前旋转状态
-    let currentQuaternion = new THREE.Quaternion();
+    // The three controls define the pose directly as XYZ Euler angles (degrees),
+    // the same convention that batch simulation uses and that is written to the exports.
+    function applyControlRotation() {
+        const angles = axes.map(axis => {
+            const value = parseFloat(document.getElementById(`rotation${axis}Value`).value);
+            return Number.isFinite(value) ? value : 0;
+        });
+        capsule.quaternion.copy(quaternionFromEulerDegrees(angles[0], angles[1], angles[2]));
+    }
 
     const resetButton = document.getElementById('resetRotation');
     resetButton.addEventListener('click', () => {
-        // 重置四元数为单位四元数（无旋转）
-        currentQuaternion.set(0, 0, 0, 1);
-
         // 更新UI显示
         axes.forEach(axis => {
             const slider = document.getElementById(`rotation${axis}`);
@@ -2708,8 +2963,8 @@ function setupRotationControls() {
             input.value = 0;
         });
 
-        // 应用四元数到胶囊
-        capsule.quaternion.copy(currentQuaternion);
+        // 重置为无旋转
+        applyControlRotation();
 
         // 重置旋转时更新所有视图
         updateProjectionView();
@@ -2721,7 +2976,7 @@ function setupRotationControls() {
     });
 
     // 创建防抖版本的投影视图更新函数
-    const debouncedUpdateProjectionView = debounce(updateProjectionView, 100);
+    const debouncedUpdateProjectionView = debounce(updateProjectionViewIfStale, 100);
     // 新增：创建防抖版本的侧面视图更新函数
     const debouncedUpdateSideView = debounce(() => {
         if (sideViewVisible) {
@@ -2737,38 +2992,11 @@ function setupRotationControls() {
             const value = parseFloat(slider.value);
             input.value = value;
 
-            // 创建一个表示当前轴旋转的四元数
-            const axisQuaternion = new THREE.Quaternion();
-            const axisVector = new THREE.Vector3();
+            // Rebuild the pose from all three Euler angles (XYZ)
+            applyControlRotation();
 
-            // 设置旋转轴
-            if (axis === 'X') axisVector.set(1, 0, 0);
-            else if (axis === 'Y') axisVector.set(0, 1, 0);
-            else if (axis === 'Z') axisVector.set(0, 0, 1);
-
-            // 设置旋转角度（弧度）
-            axisQuaternion.setFromAxisAngle(axisVector, THREE.MathUtils.degToRad(value));
-
-            // 从当前欧拉角重建基础四元数
-            const eulerAngles = new THREE.Euler();
-            axes.forEach(a => {
-                if (a !== axis) {
-                    const val = parseFloat(document.getElementById(`rotation${a}Value`).value);
-                    eulerAngles[a.toLowerCase()] = THREE.MathUtils.degToRad(val);
-                }
-            });
-
-            // 从欧拉角创建基础四元数
-            const baseQuaternion = new THREE.Quaternion().setFromEuler(eulerAngles);
-
-            // 应用当前轴的旋转
-            currentQuaternion = axisQuaternion.multiply(baseQuaternion);
-
-            // 应用四元数到胶囊
-            capsule.quaternion.copy(currentQuaternion);
-
-            // 实时更新主视图
-            renderer.render(scene, camera);
+            // 实时更新主视图（the animation loop renders it on the next frame; no duplicate render here）
+            mainViewDirty = true;
 
             // 使用防抖函数更新投影视图，减少渲染频率
             debouncedUpdateProjectionView();
@@ -2778,45 +3006,13 @@ function setupRotationControls() {
         });
 
         input.addEventListener('change', () => {
-            let value = parseFloat(input.value);
+            let value = readNumberOr(input, slider);
             value = Math.max(-180, Math.min(180, value));
             slider.value = value;
             input.value = value;
 
-            // 创建一个表示当前轴旋转的四元数
-            const axisQuaternion = new THREE.Quaternion();
-            const axisVector = new THREE.Vector3();
-
-            // 设置旋转轴
-            if (axis === 'X') axisVector.set(1, 0, 0);
-            else if (axis === 'Y') axisVector.set(0, 1, 0);
-            else if (axis === 'Z') axisVector.set(0, 0, 1);
-
-            // 设置旋转角度（弧度）
-            axisQuaternion.setFromAxisAngle(axisVector, THREE.MathUtils.degToRad(value));
-
-            // 从当前欧拉角重建基础四元数
-            const eulerAngles = new THREE.Euler();
-            axes.forEach(a => {
-                if (a !== axis) {
-                    const val = parseFloat(document.getElementById(`rotation${a}Value`).value);
-                    eulerAngles[a.toLowerCase()] = THREE.MathUtils.degToRad(val);
-                }
-            });
-
-            // 从欧拉角创建基础四元数
-            const baseQuaternion = new THREE.Quaternion().setFromEuler(eulerAngles);
-
-            // 应用当前轴的旋转
-            currentQuaternion = axisQuaternion.multiply(baseQuaternion);
-
-            // 应用四元数到胶囊
-            capsule.quaternion.copy(currentQuaternion);
-
-            // 输入值变化时更新所有视图
-            if (camera.userData.lastCapsuleRotation) {
-                camera.userData.lastCapsuleRotation.copy(capsule.quaternion);
-            }
+            // Rebuild the pose from all three Euler angles (XYZ)
+            applyControlRotation();
 
             // 如果侧面视图可见，更新侧面视图
             if (sideViewVisible) {
@@ -2844,7 +3040,7 @@ function setupHairControls() {
     });
 
     hairCountInput.addEventListener('change', () => {
-        let value = parseInt(hairCountInput.value);
+        let value = Math.round(readNumberOr(hairCountInput, hairCountSlider));
         value = Math.max(0, Math.min(50, value));
         hairCountSlider.value = value;
         hairCountInput.value = value;
@@ -2857,7 +3053,7 @@ function setupHairControls() {
     });
 
     hairLengthInput.addEventListener('change', () => {
-        let value = parseFloat(hairLengthInput.value);
+        let value = readNumberOr(hairLengthInput, hairLengthSlider);
         value = Math.max(0.5, Math.min(10, value));
         hairLengthSlider.value = value;
         hairLengthInput.value = value;
@@ -2870,7 +3066,7 @@ function setupHairControls() {
     });
 
     shapeParamInput.addEventListener('change', () => {
-        let value = parseFloat(shapeParamInput.value);
+        let value = readNumberOr(shapeParamInput, shapeParamSlider);
         value = Math.max(0.5, Math.min(10, value));
         shapeParamSlider.value = value;
         shapeParamInput.value = value;
@@ -2880,6 +3076,82 @@ function setupHairControls() {
     // 重新生成菌毛按钮
     regenerateButton.addEventListener('click', () => {
         updateCapsule();  // 这里会触发直方图的更新
+    });
+
+    // Attachment point allocation: fixed cylinder share or area-proportional
+    const anchorModeSelect = document.getElementById('anchorMode');
+    const shareSlider = document.getElementById('cylinderShare');
+    const shareInput = document.getElementById('cylinderShareValue');
+
+    anchorModeSelect.addEventListener('change', () => {
+        syncAnchorControlState();
+        updateCapsule();
+    });
+
+    shareSlider.addEventListener('input', () => {
+        shareInput.value = shareSlider.value;
+        updateCapsule();
+    });
+
+    shareInput.addEventListener('change', () => {
+        let value = parseFloat(shareInput.value);
+        if (!Number.isFinite(value)) {
+            value = DEFAULT_CYLINDER_SHARE_PERCENT;
+        }
+        value = Math.max(0, Math.min(100, value));
+        shareSlider.value = value;
+        shareInput.value = value;
+        updateCapsule();
+    });
+
+    syncAnchorControlState();
+    updateAnchorRatioText(
+        parseFloat(document.getElementById('radiusValue').value),
+        parseFloat(document.getElementById('heightValue').value)
+    );
+}
+
+// ---- Attachment point allocation settings ----
+function readAnchorSettings() {
+    const modeElement = document.getElementById('anchorMode');
+    const shareElement = document.getElementById('cylinderShareValue');
+    const share = parseFloat(shareElement.value);
+    return {
+        anchorMode: modeElement.value === 'area' ? 'area' : 'fixed',
+        cylinderShare: Number.isFinite(share) ? share : DEFAULT_CYLINDER_SHARE_PERCENT
+    };
+}
+
+// Write settings into the controls only; the caller regenerates the capsule
+function applyAnchorSettings(params) {
+    if (!params || params.anchorMode === undefined) {
+        return;
+    }
+    document.getElementById('anchorMode').value = params.anchorMode === 'area' ? 'area' : 'fixed';
+    document.getElementById('cylinderShareValue').value = params.cylinderShare;
+    document.getElementById('cylinderShare').value = params.cylinderShare;
+    syncAnchorControlState();
+}
+
+// The share inputs only apply in 'fixed' mode
+function syncAnchorControlState() {
+    const isFixed = document.getElementById('anchorMode').value !== 'area';
+    document.getElementById('cylinderShare').disabled = !isFixed;
+    document.getElementById('cylinderShareValue').disabled = !isFixed;
+}
+
+function updateAnchorRatioText(radius, height) {
+    const textElement = document.getElementById('anchorRatioText');
+    if (!textElement) {
+        return;
+    }
+    const { anchorMode, cylinderShare } = readAnchorSettings();
+    const fraction = computeCylinderFraction(radius, height, anchorMode, cylinderShare);
+    const cylinderPercent = (fraction * 100).toFixed(1);
+    const capsPercent = ((1 - fraction) * 100).toFixed(1);
+    const note = (height - 2 * radius <= 1e-9) ? tr('anchor.noCylinder') : '';
+    textElement.textContent = tr('anchor.ratio', {
+        mode: describeAnchorMode(anchorMode), cylinder: cylinderPercent, caps: capsPercent, note: note
     });
 }
 
@@ -2918,9 +3190,17 @@ function setupExportButton() {
                 hairCount: parseInt(document.getElementById('hairCountValue').value),
                 meanHairLength: parseFloat(document.getElementById('hairLengthValue').value),
                 shapeParam: parseFloat(document.getElementById('shapeParamValue').value),
+                anchorMode: readAnchorSettings().anchorMode,
+                cylinderSharePercent: roundTo(computeCylinderFraction(
+                    parseFloat(document.getElementById('radiusValue').value),
+                    parseFloat(document.getElementById('heightValue').value),
+                    readAnchorSettings().anchorMode,
+                    readAnchorSettings().cylinderShare
+                ) * 100, 1),
                 rotationX: parseFloat(document.getElementById('rotationXValue').value),
                 rotationY: parseFloat(document.getElementById('rotationYValue').value),
-                rotationZ: parseFloat(document.getElementById('rotationZValue').value)
+                rotationZ: parseFloat(document.getElementById('rotationZValue').value),
+                rotationConvention: 'Euler XYZ (three.js order), degrees'
             };
         }
 
@@ -2961,7 +3241,7 @@ function exportAsJSON(data) {
 
     const link = document.createElement('a');
     link.href = url;
-    link.download = `胶囊细菌模型数据_${timestamp}.json`;
+    link.download = `${tr('file.modelData')}_${timestamp}.json`;
     link.click();
 
     URL.revokeObjectURL(url);
@@ -2975,75 +3255,83 @@ function exportAsExcel(data) {
     // 添加模型参数工作表
     if (data.modelParameters) {
         const paramRows = [
-            ['参数', '值'],
-            ['长轴长度', data.modelParameters.height],
-            ['半径', data.modelParameters.radius],
-            ['菌毛数量', data.modelParameters.hairCount],
-            ['平均长度', data.modelParameters.meanHairLength],
-            ['形状参数', data.modelParameters.shapeParam],
-            ['X轴旋转', data.modelParameters.rotationX],
-            ['Y轴旋转', data.modelParameters.rotationY],
-            ['Z轴旋转', data.modelParameters.rotationZ]
+            [tr('col.parameter'), tr('col.value')],
+            [tr('col.axisLength'), data.modelParameters.height],
+            [tr('col.radius'), data.modelParameters.radius],
+            [tr('col.hairCount'), data.modelParameters.hairCount],
+            [tr('col.meanHairLength'), data.modelParameters.meanHairLength],
+            [tr('col.concentration'), data.modelParameters.shapeParam],
+            [tr('col.anchorMode'), describeAnchorMode(data.modelParameters.anchorMode)],
+            [tr('col.cylinderShare'), data.modelParameters.cylinderSharePercent],
+            [tr('col.rotX'), data.modelParameters.rotationX],
+            [tr('col.rotY'), data.modelParameters.rotationY],
+            [tr('col.rotZ'), data.modelParameters.rotationZ],
+            [tr('col.rotationConvention'), data.modelParameters.rotationConvention || 'Euler XYZ (three.js order), degrees']
         ];
 
         const paramWs = XLSX.utils.aoa_to_sheet(paramRows);
-        XLSX.utils.book_append_sheet(wb, paramWs, '模型参数');
+        XLSX.utils.book_append_sheet(wb, paramWs, tr('sheet.modelParams'));
     }
 
     // 添加菌毛真实长度工作表
     if (data.hairLengths && data.hairLengths.length > 0) {
-        const hairRows = [['序号', '菌毛长度']];
+        const hairRows = [[tr('col.seq'), tr('col.hairLength')]];
         data.hairLengths.forEach((length, index) => {
             hairRows.push([index + 1, length]);
         });
 
         const hairWs = XLSX.utils.aoa_to_sheet(hairRows);
-        XLSX.utils.book_append_sheet(wb, hairWs, '菌毛真实长度');
+        XLSX.utils.book_append_sheet(wb, hairWs, tr('sheet.trueLengths'));
     }
 
     if (data.hairObservations && data.hairObservations.length > 0) {
         const pairedRows = [
-            ['菌毛序号', '真实长度', '投影长度', '是否可见']
+            [tr('col.hairNo'), tr('col.trueLength'), tr('col.projLength'), tr('col.visible')]
         ];
         data.hairObservations.forEach((item) => {
             pairedRows.push([
                 item.hairIndex + 1,
-                Number(item.trueLength).toFixed(3),
-                Number(item.projectionLength).toFixed(3),
-                item.isVisible ? '是' : '否'
+                roundTo(item.trueLength, 3),
+                roundTo(item.projectionLength, 3),
+                item.isVisible ? tr('col.yes') : tr('col.no')
             ]);
         });
         const pairedWs = XLSX.utils.aoa_to_sheet(pairedRows);
-        XLSX.utils.book_append_sheet(wb, pairedWs, '菌毛逐根对照');
+        XLSX.utils.book_append_sheet(wb, pairedWs, tr('sheet.pairing'));
     }
 
     // 添加投影菌毛长度工作表
     if (data.projectionHairLengths && data.projectionHairLengths.length > 0) {
-        const projRows = [['序号', '投影菌毛外伸长度']];
+        const projRows = [[tr('col.seq'), tr('col.projOutsideLength')]];
         data.projectionHairLengths.forEach((length, index) => {
             projRows.push([index + 1, length]);
         });
 
         const projWs = XLSX.utils.aoa_to_sheet(projRows);
-        XLSX.utils.book_append_sheet(wb, projWs, '投影菌毛长度');
+        XLSX.utils.book_append_sheet(wb, projWs, tr('sheet.projLengths'));
     }
 
     // 添加统计数据工作表
+    // Numeric summary (keeps number type); 'N/A' when the list is empty
+    const summarize = (values, reducer) =>
+        (values && values.length > 0) ? roundTo(reducer(values), 2) : 'N/A';
+    const minOf = (v) => Math.min(...v);
+    const maxOf = (v) => Math.max(...v);
+    const meanOf = (v) => v.reduce((a, b) => a + b, 0) / v.length;
     const statsWs = XLSX.utils.aoa_to_sheet([
-        ['统计数据', '菌毛真实长度', '投影菌毛外伸长度'],
-        ['数量', data.hairLengths ? data.hairLengths.length : 0, data.projectionHairLengths ? data.projectionHairLengths.length : 0],
-        ['最小值', data.hairLengths ? Math.min(...data.hairLengths).toFixed(2) : 'N/A', data.projectionHairLengths && data.projectionHairLengths.length > 0 ? Math.min(...data.projectionHairLengths).toFixed(2) : 'N/A'],
-        ['最大值', data.hairLengths ? Math.max(...data.hairLengths).toFixed(2) : 'N/A', data.projectionHairLengths && data.projectionHairLengths.length > 0 ? Math.max(...data.projectionHairLengths).toFixed(2) : 'N/A'],
-        ['平均值', data.hairLengths ? (data.hairLengths.reduce((a, b) => a + b, 0) / data.hairLengths.length).toFixed(2) : 'N/A',
-            data.projectionHairLengths && data.projectionHairLengths.length > 0 ? (data.projectionHairLengths.reduce((a, b) => a + b, 0) / data.projectionHairLengths.length).toFixed(2) : 'N/A']
+        [tr('col.statistic'), tr('col.trueHairLength'), tr('col.projOutsideLength')],
+        [tr('col.n'), data.hairLengths ? data.hairLengths.length : 0, data.projectionHairLengths ? data.projectionHairLengths.length : 0],
+        [tr('col.min'), summarize(data.hairLengths, minOf), summarize(data.projectionHairLengths, minOf)],
+        [tr('col.max'), summarize(data.hairLengths, maxOf), summarize(data.projectionHairLengths, maxOf)],
+        [tr('col.mean'), summarize(data.hairLengths, meanOf), summarize(data.projectionHairLengths, meanOf)]
     ]);
-    XLSX.utils.book_append_sheet(wb, statsWs, '统计数据');
+    XLSX.utils.book_append_sheet(wb, statsWs, tr('sheet.stats'));
 
     // 生成Excel文件并下载
     const now = new Date();
     const timestamp = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}_${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}`;
 
-    XLSX.writeFile(wb, `胶囊细菌模型数据_${timestamp}.xlsx`);
+    XLSX.writeFile(wb, `${tr('file.modelData')}_${timestamp}.xlsx`);
 }
 
 // 帮助功能
@@ -3110,25 +3398,31 @@ setupBatchSimulationButton();
 updateProjectionView();
 
 // 修改 animate 函数中的旋转跟踪部分
+// What the main view was last rendered for
+const mainViewState = {
+    position: new THREE.Vector3(NaN, NaN, NaN),
+    quaternion: new THREE.Quaternion(NaN, NaN, NaN, NaN),
+    capsuleQuaternion: new THREE.Quaternion(NaN, NaN, NaN, NaN)
+};
+
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
 
-    // 检查相机位置或旋转是否发生变化
-    if (!camera.userData.lastPosition) {
-        camera.userData.lastPosition = new THREE.Vector3();
-        camera.userData.lastQuaternion = new THREE.Quaternion();
-        camera.userData.lastCapsuleQuaternion = new THREE.Quaternion();
+    // Main view: render only when the camera or the pose changed (or something marked it dirty)
+    if (!camera.position.equals(mainViewState.position) ||
+        !camera.quaternion.equals(mainViewState.quaternion) ||
+        !capsule.quaternion.equals(mainViewState.capsuleQuaternion)) {
+        mainViewState.position.copy(camera.position);
+        mainViewState.quaternion.copy(camera.quaternion);
+        mainViewState.capsuleQuaternion.copy(capsule.quaternion);
+        mainViewDirty = true;
     }
 
-    // 如果相机位置、旋转或胶囊旋转发生变化，更新投影视图
-    if (!camera.position.equals(camera.userData.lastPosition) ||
-        !camera.quaternion.equals(camera.userData.lastQuaternion) ||
-        !capsule.quaternion.equals(camera.userData.lastCapsuleQuaternion)) {
-
-        camera.userData.lastPosition.copy(camera.position);
-        camera.userData.lastQuaternion.copy(camera.quaternion);
-        camera.userData.lastCapsuleQuaternion.copy(capsule.quaternion);
+    // Projection views: refresh if they were computed for a different camera/pose.
+    // Explicit updateProjectionView() calls record what they computed, so nothing is analysed twice.
+    // During a batch run the batch loop drives the (low-rate) preview itself.
+    if (!batchFastMode && camera.userData.lastPosition && isProjectionViewStale()) {
 
         // 如果侧面视图可见，更新侧面视图
         if (sideViewVisible) {
@@ -3140,11 +3434,42 @@ function animate() {
         updateProjectionView();
     }
 
-    renderer.render(scene, camera);
+    if (mainViewDirty) {
+        renderer.render(scene, camera);
+        mainViewDirty = false;
+    }
 }
 
 // 开始动画循环
 animate();
+
+// Language switch: refresh everything that is not static markup
+onLanguageChange(() => {
+    applyChartLanguage();
+    refreshFluorescenceLegend();
+
+    const debugTitle = document.getElementById('debugCanvasTitle');
+    if (debugTitle) {
+        debugTitle.textContent = tr('debug.title');
+    }
+    const debugToggle = document.getElementById('debugCanvasToggle');
+    if (debugToggle) {
+        debugToggle.textContent = tr('debug.toggle');
+    }
+
+    updateAnchorRatioText(
+        parseFloat(document.getElementById('radiusValue').value),
+        parseFloat(document.getElementById('heightValue').value)
+    );
+
+    // Re-run the (cheap) view update so the statistics line is regenerated in the new language
+    if (!batchFastMode) {
+        updateProjectionView({ forceFull: true });
+    }
+});
+
+// The projection analysis is the expensive part: run it once after the resize burst ends
+const updateProjectionViewAfterResize = debounce(() => updateProjectionView({ forceFull: true }), 120);
 
 // 窗口大小调整
 window.addEventListener('resize', () => {
@@ -3152,9 +3477,10 @@ window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    mainViewDirty = true;
 
     // 更新投影视图
-    updateProjectionView();
+    updateProjectionViewAfterResize();
 
     // 更新侧面视图
     if (sideViewVisible) {
@@ -3173,14 +3499,14 @@ window.addEventListener('resize', () => {
         try {
             hairLengthHistChart.resize();
         } catch (e) {
-            console.error('调整毛发长度图表大小时出错:', e);
+            console.error('Error while resizing the true length chart:', e);
         }
     }
     if (projectionHairLengthChart && typeof projectionHairLengthChart.resize === 'function') {
         try {
             projectionHairLengthChart.resize();
         } catch (e) {
-            console.error('调整投影菌毛长度图表大小时出错:', e);
+            console.error('Error while resizing the projected length chart:', e);
         }
     }
     // 更新荧光渲染器大小
@@ -3242,15 +3568,13 @@ window.addEventListener('DOMContentLoaded', () => {
     // 检查投影统计视图容器是否存在
     const projectionStatsView = document.getElementById('projectionStatsView');
     if (!projectionStatsView) {
-        console.warn('投影统计视图容器不存在，请检查HTML');
+        console.warn('Projection statistics container not found');
     }
 
     // 检查投影画布是否存在
     const projectionCanvas = document.getElementById('projectionCanvas');
     if (!projectionCanvas) {
-        console.warn('投影画布容器不存在，请检查HTML');
+        console.warn('Projection canvas container not found');
     }
-
-    // 初始更新投影视图
-    updateProjectionView();
+    // The initial projection view is already computed by the top-level updateProjectionView() call
 });

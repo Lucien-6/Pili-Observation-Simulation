@@ -13,6 +13,8 @@ Desktop.ini
 # Generated batch outputs (reproduced by the app)
 *.xlsx
 *.json
+*.csv
+*.png
 
 # Keep example figures tracked; ignore other dumps
 *.log
