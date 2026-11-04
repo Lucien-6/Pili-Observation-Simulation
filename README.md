@@ -102,7 +102,6 @@ A browser-based geometric model of a capsule-shaped bacterium and its pili, used
 | `pili-sim-i18n.js` | 中英文界面文本与语言切换（须先于 `pili-sim.js` 加载） |
 | `CHANGELOG.md` | 版本更新记录 |
 | `LICENSE` | 学术非商业许可 |
-| 示例 `*.png` | 1.2.1 版本历史批量运行的分布图，仅作界面示意；数值受 1.5.0 已修复的偏差影响（见 `CHANGELOG.md`），不应与新结果对比 |
 
 运行时生成的 Excel / JSON 默认不纳入版本库，可在程序内重新导出。
 
@@ -208,7 +207,6 @@ In batch output:
 | `pili-sim-i18n.js` | Chinese / English UI strings and language switching (must load before `pili-sim.js`) |
 | `CHANGELOG.md` | Release notes |
 | `LICENSE` | Academic non-commercial license |
-| Example `*.png` | Histograms from a version 1.2.1 batch run, for illustration only; the values are affected by the bias fixed in 1.5.0 (see `CHANGELOG.md`) and should not be compared with new results |
 
 Excel / JSON files produced at runtime are gitignored and can be regenerated from the app.
 
